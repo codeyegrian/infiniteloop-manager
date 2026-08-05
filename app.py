@@ -2,24 +2,64 @@
 import streamlit as st
 import pandas as pd
 import json
-import os
+import base64
+import requests
 import yfinance as yf
 from datetime import date
 
 st.set_page_config(page_title="Aiden Infinite Loop Strategy Live Manager", layout="wide")
 
-DB_FILE = "trades.json"
-SETTINGS_FILE = "settings.json"
+# --- GitHub API Sync Helpers ---
+GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+REPO_NAME = st.secrets.get("REPO_NAME", "codeyegrian/infiniteloop-manager")
+BRANCH = "main"
 
-# --- Load & Save Helpers ---
+HEADERS = {
+    "Authorization": f"Bearer {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github+json"
+}
+
+def github_load_file(filename, default_value):
+    if not GITHUB_TOKEN:
+        return default_value
+    url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            file_data = response.json()
+            content_encoded = file_data.get("content", "")
+            decoded_bytes = base64.b64decode(content_encoded)
+            return json.loads(decoded_bytes.decode("utf-8"))
+    except Exception:
+        pass
+    return default_value
+
+def github_save_file(filename, data):
+    if not GITHUB_TOKEN:
+        return
+    url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
+    try:
+        # Get current file sha if it exists
+        get_resp = requests.get(url, headers=HEADERS, timeout=10)
+        sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+        
+        json_str = json.dumps(data, indent=4, ensure_ascii=False)
+        content_encoded = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
+        
+        payload = {
+            "message": f"Update {filename} via Streamlit Cloud",
+            "content": content_encoded,
+            "branch": BRANCH
+        }
+        if sha:
+            payload["sha"] = sha
+            
+        requests.put(url, headers=HEADERS, json=payload, timeout=10)
+    except Exception:
+        pass
+
 def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {
+    default_settings = {
         "total_capital": 65000.0, 
         "use_custom_active": False,
         "custom_active_capital": 52000.0,
@@ -33,25 +73,21 @@ def load_settings():
             "실수량": 80, "예상": 80, "실매수": 80
         }
     }
+    loaded = github_load_file("settings.json", default_settings)
+    return loaded if isinstance(loaded, dict) else default_settings
 
 def save_settings(settings_dict):
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings_dict, f, indent=4)
+    github_save_file("settings.json", settings_dict)
 
 def load_trades():
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r") as f:
-                data = json.load(f)
-                return sorted(data, key=lambda x: x.get("Date", ""), reverse=True)
-        except Exception:
-            return []
+    loaded = github_load_file("trades.json", [])
+    if isinstance(loaded, list):
+        return sorted(loaded, key=lambda x: x.get("Date", ""), reverse=True)
     return []
 
 def save_trades(trades):
     sorted_trades = sorted(trades, key=lambda x: x.get("Date", ""), reverse=True)
-    with open(DB_FILE, "w") as f:
-        json.dump(sorted_trades, f, indent=4)
+    github_save_file("trades.json", sorted_trades)
 
 if "settings" not in st.session_state:
     st.session_state.settings = load_settings()
@@ -59,7 +95,7 @@ if "settings" not in st.session_state:
 if "trades" not in st.session_state:
     st.session_state.trades = load_trades()
 
-st.title("⚡ Aiden Infinite Loop Strategy - SOXL Live Manager")
+st.title("⚡ Aiden Infinite Loop Strategy - SOXL Live Manager (GitHub Synced)")
 
 # --- Fetch Live SOXL Price, 52-Week High & Extended Hours ---
 @st.cache_data(ttl=60)
@@ -206,7 +242,7 @@ col5.metric("Position & Tier", f"{total_shares:,.0f} shares", f"Tier {current_ti
 
 st.divider()
 
-# --- Pre-calculate Tiers & Target Tier Logic (Close-Price Strategy Matching Upper Tier) ---
+# --- Pre-calculate Tiers & Target Tier Logic ---
 temp_tiers = []
 prev_buy = reference_peak
 for t in range(1, 41):
@@ -255,7 +291,6 @@ elif current_filled_qty > 0:
 else:
     recommended_buy_qty = half_tier_buy_qty
 
-# Check today's trades from trade history dynamically
 today_str = str(date.today())
 today_trades_df = pd.DataFrame()
 today_shares_sum = 0
@@ -266,7 +301,6 @@ if not df_trades.empty and "Date" in df_trades.columns:
 
 already_bought_today = not today_trades_df.empty
 
-# --- Dynamic Daily Order Text Generator ---
 half_tier_qty = int((unit_capital * 0.5) // current_soxl_price) if current_soxl_price > 0 else 0
 avg_buy_active = (avg_price > 0) and (current_soxl_price < avg_price)
 tier_buy_active = (recommended_buy_qty > 0) and not already_bought_today
@@ -287,7 +321,6 @@ action_summary_str = " | ".join(action_summary_parts)
 
 # --- Top Section: Buy & Sell Guides ---
 st.subheader("🛒 Today's Buy & Sell Guides")
-
 st.info(f"**🎯 오늘의 핵심 요약 (Action Summary):** {action_summary_str}")
 
 c_avg_buy, c_tier_buy, c_crash_buy, c_sell = st.columns(4)
@@ -316,10 +349,8 @@ with c_avg_buy:
 
 with c_tier_buy:
     st.markdown(f"### 📍 티어매수 가이드 (Tier {target_tier_idx})")
-    
     target_dates = tier_trade_dates.get(target_tier_idx, [])
     dates_str = ", ".join(target_dates) if target_dates else "-"
-    
     est_cost_tier = recommended_buy_qty * target_tier_price
     
     if current_filled_qty >= standard_tier_qty:
@@ -348,7 +379,6 @@ with c_tier_buy:
 
 with c_crash_buy:
     st.markdown("### 🚨 폭락장 대비 추가매수")
-    
     next_tiers_to_show = [t for t in range(target_tier_idx + 1, min(41, target_tier_idx + 6))]
     if next_tiers_to_show:
         html_content = "<div style='background-color: #f8d7da; padding: 15px; border-radius: 5px; font-size: 14px; line-height: 1.6; color: #721c24;'>하위 5개 티어 현황:<br><br>"
@@ -381,8 +411,8 @@ with c_sell:
 
 st.divider()
 
-# --- 2. Lower Section: 40-Tier Master Grid Table ---
-st.subheader("📊 40-Tier Master Grid & Target Price Table (Live Price Highlighted)")
+# --- Lower Section: 40-Tier Master Grid Table ---
+st.subheader("📊 40-Tier Master Grid & Target Price Table (GitHub Synced)")
 
 tier_data = []
 cum_shares = 0
@@ -484,7 +514,6 @@ st.subheader("📋 Trade History (Click any column header to sort)")
 
 if not df_trades.empty:
     df_trades["Date"] = df_trades["Date"].astype(str)
-    
     delta_display_df = df_trades[["Date", "Type", "Price", "Qty", "Amount", "Tier"]].copy()
     
     edited_df = st.data_editor(
