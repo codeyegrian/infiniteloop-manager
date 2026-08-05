@@ -2,78 +2,87 @@
 import streamlit as st
 import pandas as pd
 import json
-import os
-import requests
 import base64
+import requests
 import yfinance as yf
 from datetime import date
 
 st.set_page_config(page_title="Aiden Infinite Loop Strategy Live Manager", layout="wide")
 
-# --- GitHub Cloud Persistence Helpers ---
-GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", os.getenv("GITHUB_TOKEN", ""))
-REPO_NAME = st.secrets.get("REPO_NAME", os.getenv("REPO_NAME", ""))
+# --- GitHub API Sync Helpers ---
+try:
+    GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+    REPO_NAME = st.secrets.get("REPO_NAME", "codeyegrian/infiniteloop-manager")
+except Exception:
+    GITHUB_TOKEN = ""
+    REPO_NAME = "codeyegrian/infiniteloop-manager"
 
-def github_load_file(filename, default_val):
-    if not GITHUB_TOKEN or not REPO_NAME:
-        # Fallback to local files if secrets aren't set yet
+BRANCH = "master"
+
+HEADERS = {
+    "Authorization": f"Bearer {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github+json"
+}
+
+def github_load_file(filename, default_value):
+    if not GITHUB_TOKEN:
+        import os
         if os.path.exists(filename):
             try:
-                with open(filename, "r") as f:
+                with open(filename, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception:
                 pass
-        return default_val
+        return default_value
     
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=HEADERS, timeout=5)
         if response.status_code == 200:
             file_data = response.json()
-            file_content = base64.b64decode(file_data["content"]).decode("utf-8")
-            return json.loads(file_content)
+            content_encoded = file_data.get("content", "")
+            decoded_bytes = base64.b64decode(content_encoded)
+            return json.loads(decoded_bytes.decode("utf-8"))
     except Exception:
         pass
-    return default_val
+    return default_value
 
 def github_save_file(filename, data):
-    if not GITHUB_TOKEN or not REPO_NAME:
-        # Fallback to local files if secrets aren't set yet
-        with open(filename, "w") as f:
-            json.dump(data, f, indent=4)
+    if not GITHUB_TOKEN:
+        import json
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
         return
-
+        
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    
-    # Get current file SHA if it exists (required by GitHub API for updates)
-    sha = None
-    get_resp = requests.get(url, headers=headers)
-    if get_resp.status_code == 200:
-        sha = get_resp.json().get("sha")
+    try:
+        get_resp = requests.get(url, headers=HEADERS, timeout=5)
+        sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
         
-    file_content_str = json.dumps(data, indent=4)
-    encoded_content = base64.b64encode(file_content_str.encode("utf-8")).decode("utf-8")
-    
-    payload = {
-        "message": f"Auto-update {filename} from Streamlit app",
-        "content": encoded_content
-    }
-    if sha:
-        payload["sha"] = sha
+        json_str = json.dumps(data, indent=4, ensure_ascii=False)
+        content_encoded = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
         
-    requests.put(url, headers=headers, json=payload)
+        payload = {
+            "message": f"Update {filename} via Live Manager",
+            "content": content_encoded,
+            "branch": BRANCH
+        }
+        if sha:
+            payload["sha"] = sha
+            
+        requests.put(url, headers=HEADERS, json=payload, timeout=5)
+    except Exception:
+        pass
 
-# --- Load & Save Wrappers ---
+# --- Load & Save Helpers via GitHub ---
 def load_settings():
-    default_settings = {
+    default_s = {
         "total_capital": 65000.0, 
         "use_custom_active": False,
         "custom_active_capital": 52000.0,
         "active_ratio": 80.0,
-        "custom_peak": 302.0, 
         "use_52w_high": True,
+        "manual_tier_1": 302.0, 
         "col_widths": {
             "Tier": 60, "매수": 100, "수량": 80, "매도": 100, 
             "매수기준": 90, "매도기준": 90, "시드비율": 90, 
@@ -81,14 +90,17 @@ def load_settings():
             "실수량": 80, "예상": 80, "실매수": 80
         }
     }
-    return github_load_file("settings.json", default_settings)
+    loaded = github_load_file("settings.json", default_s)
+    return loaded if isinstance(loaded, dict) else default_s
 
 def save_settings(settings_dict):
     github_save_file("settings.json", settings_dict)
 
 def load_trades():
-    data = github_load_file("trades.json", [])
-    return sorted(data, key=lambda x: x.get("Date", ""), reverse=True)
+    loaded = github_load_file("trades.json", [])
+    if isinstance(loaded, list):
+        return sorted(loaded, key=lambda x: x.get("Date", ""), reverse=True)
+    return []
 
 def save_trades(trades):
     sorted_trades = sorted(trades, key=lambda x: x.get("Date", ""), reverse=True)
@@ -169,20 +181,36 @@ st.sidebar.info(f"**전체자금 (Total):** ${total_capital:,.2f}\n\n"
                 f"**1 Tier Unit Capital:** ${unit_capital:,.2f}")
 
 st.sidebar.divider()
-st.sidebar.subheader("🎯 Peak Price Settings")
-use_52w = st.sidebar.checkbox("Use 52-Week High as Peak", value=settings.get("use_52w_high", True))
+st.sidebar.subheader("🎯 Tier 1 & Peak Settings")
+use_52w = st.sidebar.checkbox("Use 52-Week High as Tier 1", value=settings.get("use_52w_high", True))
+
+# 52주 최고가 데이터가 아직 로드되지 않았을 때의 안전 기본값
+if 'high_52_week' not in locals() or not high_52_week:
+    high_52_week = 302.0  # 기본 대체 가격
 
 if use_52w:
-    reference_peak = high_52_week
-    st.sidebar.info(f"**52-Week High Peak:** ${high_52_week:,.2f}")
-    custom_peak_val = settings.get("custom_peak", 302.0)
+    tier_1_price = high_52_week
+    st.sidebar.info(f"**52-Week High (Tier 1):** ${high_52_week:,.2f}")
+    manual_tier_1_val = settings.get("manual_tier_1", 302.0)
 else:
-    custom_peak_val = st.sidebar.number_input(
-        "Custom Peak Price ($)", 
-        value=float(settings.get("custom_peak", high_52_week)), 
+    manual_tier_1_val = st.sidebar.number_input(
+        "Manual Tier 1 Price ($)", 
+        value=float(settings.get("manual_tier_1", 302.0)), 
         step=0.5
     )
-    reference_peak = custom_peak_val
+    tier_1_price = manual_tier_1_val
+
+# 0이거나 비어있을 경우 절대 0이 되지 않도록 강제 방어
+if not tier_1_price or tier_1_price <= 0:
+    tier_1_price = 302.0
+
+reference_peak = tier_1_price
+tier_0_price = tier_1_price * 1.05
+
+st.sidebar.info(f"**0 Tier (Tier 1 + 5%):** ${tier_0_price:,.2f}")
+# Tier 0 and Tier 2-40 Logic based on Tier 1
+tier_0_price = tier_1_price * 1.05  # 0티어: 1티어 기준 +5%
+reference_peak = tier_1_price  # 호환용 레퍼런스
 
 # Column Width Customizer Panel
 st.sidebar.divider()
@@ -204,8 +232,8 @@ updated_settings = {
     "use_custom_active": use_custom_active,
     "custom_active_capital": active_capital if use_custom_active else float(settings.get("custom_active_capital", 52000.0)),
     "active_ratio": active_ratio_val if not use_custom_active else float(settings.get("active_ratio", 80.0)),
-    "custom_peak": custom_peak_val,
     "use_52w_high": use_52w,
+    "manual_tier_1": manual_tier_1_val,
     "col_widths": col_widths
 }
 if updated_settings != settings:
@@ -227,39 +255,61 @@ else:
     avg_price = 0.0
     current_tier = 0.0
 
-drop_from_peak_pct = ((current_soxl_price - reference_peak) / reference_peak) * 100
+# --- 티어 미리 계산 (순서 정렬) ---
+tier_0_price = tier_1_price * 1.05  
+reference_peak = tier_1_price  
+
+temp_tiers = []
+temp_tiers.append((0, tier_0_price))
+
+prev_buy = tier_1_price
+for t in range(1, 41):
+    if t == 1:
+        buy_p = tier_1_price
+    else:
+        buy_p = prev_buy * (1.0 - 0.05)
+    prev_buy = buy_p
+    temp_tiers.append((t, buy_p))
+
+tiers_1_40 = temp_tiers[1:]
+
+drop_from_peak_pct = ((current_soxl_price - tier_1_price) / tier_1_price) * 100
 invested_pct_of_active = (total_spent / active_capital) * 100 if active_capital > 0 else 0.0
 
 # --- Top Summary Dashboard (5 Columns) ---
 col1, col2, col3, col4, col5 = st.columns(5)
 
-ext_text = f"{drop_from_peak_pct:.1f}% peak"
+ext_text = f"{drop_from_peak_pct:.1f}% from T1"
 if pre_market_price:
     ext_text += f" | Pre:${pre_market_price:,.2f}"
 elif post_market_price:
     ext_text += f" | Post:${post_market_price:,.2f}"
 
 col1.metric("SOXL Live Price", f"${current_soxl_price:,.2f}", ext_text)
-col2.metric("Reference Peak Price", f"${reference_peak:,.2f}", "52W High" if use_52w else "Manual Peak")
+col2.metric("Tier 1 Base Price", f"${tier_1_price:,.2f}", "52W High" if use_52w else "Manual Tier 1")
 col3.metric("Invested Capital", f"${total_spent:,.2f}", f"{invested_pct_of_active:.1f}% Active")
 col4.metric("Average Purchase Price", f"${avg_price:,.2f}")
 col5.metric("Position & Tier", f"{total_shares:,.0f} shares", f"Tier {current_tier:.1f} / 40")
 
 st.divider()
 
-# --- Pre-calculate Tiers & Target Tier Logic ---
+# --- Pre-calculate Tiers (Tier 0 = Tier 1 + 5%, Tier 1 = Base, Tier 2~40 = Prev - 5%) ---
 temp_tiers = []
-prev_buy = reference_peak
+temp_tiers.append((0, tier_0_price))
+
+prev_buy = tier_1_price
 for t in range(1, 41):
     if t == 1:
-        buy_p = reference_peak
+        buy_p = tier_1_price
     else:
         buy_p = prev_buy * (1.0 - 0.05)
     prev_buy = buy_p
     temp_tiers.append((t, buy_p))
 
+tiers_1_40 = temp_tiers[1:]  # Tiers 1 to 40
+
 target_tier_idx = 1
-for t, buy_p in temp_tiers:
+for t, buy_p in tiers_1_40:
     if current_soxl_price <= buy_p:
         target_tier_idx = t
     else:
@@ -274,7 +324,7 @@ if not df_trades.empty:
         t_qty = trade["Qty"]
         t_date = str(trade.get("Date", ""))
         matched_tier = 1
-        for t, buy_p in temp_tiers:
+        for t, buy_p in tiers_1_40:
             if buy_p >= t_price:
                 matched_tier = t
             else:
@@ -283,7 +333,7 @@ if not df_trades.empty:
         if t_date and t_date not in tier_trade_dates[matched_tier]:
             tier_trade_dates[matched_tier].append(t_date)
 
-target_tier_price = temp_tiers[target_tier_idx - 1][1]
+target_tier_price = dict(tiers_1_40)[target_tier_idx]
 standard_tier_qty = int(unit_capital // target_tier_price) if target_tier_price > 0 else 0
 half_tier_buy_qty = max(1, int(standard_tier_qty / 2))  
 current_filled_qty = int(tier_filled_shares.get(target_tier_idx, 0))
@@ -306,6 +356,7 @@ if not df_trades.empty and "Date" in df_trades.columns:
 
 already_bought_today = not today_trades_df.empty
 
+# --- Dynamic Daily Order Text Generator ---
 half_tier_qty = int((unit_capital * 0.5) // current_soxl_price) if current_soxl_price > 0 else 0
 avg_buy_active = (avg_price > 0) and (current_soxl_price < avg_price)
 tier_buy_active = (recommended_buy_qty > 0) and not already_bought_today
@@ -354,8 +405,10 @@ with c_avg_buy:
 
 with c_tier_buy:
     st.markdown(f"### 📍 티어매수 가이드 (Tier {target_tier_idx})")
+    
     target_dates = tier_trade_dates.get(target_tier_idx, [])
     dates_str = ", ".join(target_dates) if target_dates else "-"
+    
     est_cost_tier = recommended_buy_qty * target_tier_price
     
     if current_filled_qty >= standard_tier_qty:
@@ -384,11 +437,13 @@ with c_tier_buy:
 
 with c_crash_buy:
     st.markdown("### 🚨 폭락장 대비 추가매수")
+    
     next_tiers_to_show = [t for t in range(target_tier_idx + 1, min(41, target_tier_idx + 6))]
+    dict_t_1_40 = dict(tiers_1_40)
     if next_tiers_to_show:
         html_content = "<div style='background-color: #f8d7da; padding: 15px; border-radius: 5px; font-size: 14px; line-height: 1.6; color: #721c24;'>하위 5개 티어 현황:<br><br>"
         for nt in next_tiers_to_show:
-            nt_price = temp_tiers[nt - 1][1]
+            nt_price = dict_t_1_40.get(nt, 0)
             nt_qty = int(unit_capital // nt_price) if nt_price > 0 else 0
             filled_qty_nt = tier_filled_shares.get(nt, 0)
             
@@ -416,21 +471,34 @@ with c_sell:
 
 st.divider()
 
-# --- 2. Lower Section: 40-Tier Master Grid Table ---
-st.subheader("📊 40-Tier Master Grid & Target Price Table (Live Price Highlighted)")
+# --- Lower Section: Master Grid Table (Tier 0 + Tiers 1-40) ---
+st.subheader("📊 Master Grid & Target Price Table (Live Price Highlighted)")
 
 tier_data = []
 cum_shares = 0
-prev_buy = reference_peak
 cum_actual_shares = 0
 cum_real_buy_shares = 0
 
-for t, buy_p in temp_tiers:
-    if t == 1:
-        drop_pct = 0.0
-    else:
-        drop_pct = ((buy_p - reference_peak) / reference_peak) * 100
-    
+# 0티어 (1티어 기준 +5%)
+t0_num, t0_price = temp_tiers[0]
+tier_data.append({
+    "Tier": "0 (T1+5%)",
+    "매수": round(t0_price, 2),
+    "수량": "-",
+    "매도": round(t0_price * 1.10, 2),
+    "매수기준": "T1기준+5%",
+    "매도기준": "10.00%",
+    "시드비율": "-",
+    "배정시드": "-",
+    "1Tier대비": "+5.00%",
+    "매수 (입력)": "-",
+    "실수량": "-",
+    "예상": "-",
+    "실매수": "-"
+})
+
+for t, buy_p in tiers_1_40:
+    drop_pct = ((buy_p - tier_1_price) / tier_1_price) * 100
     take_profit_p = buy_p * 1.10
     suggested_shares = int(unit_capital // buy_p) if buy_p > 0 else 0
     cum_shares += suggested_shares
@@ -440,11 +508,11 @@ for t, buy_p in temp_tiers:
     cum_real_buy_shares += input_bought_qty
     
     tier_data.append({
-        "Tier": t,
+        "Tier": str(t),
         "매수": round(buy_p, 2),
         "수량": suggested_shares,
         "매도": round(take_profit_p, 2),
-        "매수기준": "-5.00%",
+        "매수기준": "-5.00%" if t > 1 else "기준(T1)",
         "매도기준": "10.00%",
         "시드비율": f"{(1/40)*100:.2f}%",
         "배정시드": round(unit_capital, 2),
@@ -458,7 +526,15 @@ for t, buy_p in temp_tiers:
 df_tiers = pd.DataFrame(tier_data)
 
 def highlight_current_price_tier(row):
-    t_num = row["Tier"]
+    t_val = row["Tier"]
+    if t_val == "0 (T1+5%)":
+        return ['background-color: #fff3cd; color: #856404; font-weight: bold'] * len(row)
+    
+    try:
+        t_num = int(t_val)
+    except Exception:
+        return [''] * len(row)
+        
     if t_num < target_tier_idx:
         return ['background-color: #d4edda; color: #155724'] * len(row)
     elif t_num == target_tier_idx:
@@ -468,9 +544,9 @@ def highlight_current_price_tier(row):
         return [str_bg] * len(row)
 
 styled_df = df_tiers.style.apply(highlight_current_price_tier, axis=1).format({
-    "매수": "{:.2f}",
-    "매도": "{:.2f}",
-    "배정시드": "{:,.2f}"
+    "매수": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x,
+    "매도": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x,
+    "배정시드": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x
 })
 
 column_configs = {
@@ -519,6 +595,7 @@ st.subheader("📋 Trade History (Click any column header to sort)")
 
 if not df_trades.empty:
     df_trades["Date"] = df_trades["Date"].astype(str)
+    
     delta_display_df = df_trades[["Date", "Type", "Price", "Qty", "Amount", "Tier"]].copy()
     
     edited_df = st.data_editor(
@@ -533,7 +610,8 @@ if not df_trades.empty:
         st.session_state.trades = load_trades()
         st.rerun()
 
-    if st.button("Clear All History (Cycle Reset)"):
+    (st.button("Clear All History (Cycle Reset)"))
+    if st.session_state.get("clear_clicked", False):
         st.session_state.trades = []
         save_trades([])
         st.rerun()
