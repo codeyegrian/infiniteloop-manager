@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import json
@@ -81,7 +80,6 @@ def load_settings():
         "use_custom_active": False,
         "custom_active_capital": 52000.0,
         "active_ratio": 80.0,
-        "use_52w_high": True,
         "manual_tier_1": 302.0, 
         "col_widths": {
             "Tier": 60, "매수": 100, "수량": 80, "매도": 100, 
@@ -181,24 +179,15 @@ st.sidebar.info(f"**전체자금 (Total):** ${total_capital:,.2f}\n\n"
                 f"**1 Tier Unit Capital:** ${unit_capital:,.2f}")
 
 st.sidebar.divider()
-st.sidebar.subheader("🎯 Tier 1 & Peak Settings")
-use_52w = st.sidebar.checkbox("Use 52-Week High as Tier 1", value=settings.get("use_52w_high", True))
+st.sidebar.subheader("🎯 Tier 1 Settings (Manual)")
 
-# 52주 최고가 데이터가 아직 로드되지 않았을 때의 안전 기본값
-if 'high_52_week' not in locals() or not high_52_week:
-    high_52_week = 302.0  # 기본 대체 가격
-
-if use_52w:
-    tier_1_price = high_52_week
-    st.sidebar.info(f"**52-Week High (Tier 1):** ${high_52_week:,.2f}")
-    manual_tier_1_val = settings.get("manual_tier_1", 302.0)
-else:
-    manual_tier_1_val = st.sidebar.number_input(
-        "Manual Tier 1 Price ($)", 
-        value=float(settings.get("manual_tier_1", 302.0)), 
-        step=0.5
-    )
-    tier_1_price = manual_tier_1_val
+# 52주 신고가 체크박스를 완전히 제거하고 순수 수동 입력만 유지
+manual_tier_1_val = st.sidebar.number_input(
+    "Manual Tier 1 Price ($)", 
+    value=float(settings.get("manual_tier_1", 302.0)), 
+    step=0.5
+)
+tier_1_price = manual_tier_1_val
 
 # 0이거나 비어있을 경우 절대 0이 되지 않도록 강제 방어
 if not tier_1_price or tier_1_price <= 0:
@@ -208,9 +197,6 @@ reference_peak = tier_1_price
 tier_0_price = tier_1_price * 1.05
 
 st.sidebar.info(f"**0 Tier (Tier 1 + 5%):** ${tier_0_price:,.2f}")
-# Tier 0 and Tier 2-40 Logic based on Tier 1
-tier_0_price = tier_1_price * 1.05  # 0티어: 1티어 기준 +5%
-reference_peak = tier_1_price  # 호환용 레퍼런스
 
 # Column Width Customizer Panel
 st.sidebar.divider()
@@ -232,7 +218,6 @@ updated_settings = {
     "use_custom_active": use_custom_active,
     "custom_active_capital": active_capital if use_custom_active else float(settings.get("custom_active_capital", 52000.0)),
     "active_ratio": active_ratio_val if not use_custom_active else float(settings.get("active_ratio", 80.0)),
-    "use_52w_high": use_52w,
     "manual_tier_1": manual_tier_1_val,
     "col_widths": col_widths
 }
@@ -286,7 +271,7 @@ elif post_market_price:
     ext_text += f" | Post:${post_market_price:,.2f}"
 
 col1.metric("SOXL Live Price", f"${current_soxl_price:,.2f}", ext_text)
-col2.metric("Tier 1 Base Price", f"${tier_1_price:,.2f}", "52W High" if use_52w else "Manual Tier 1")
+col2.metric("Tier 1 Base Price", f"${tier_1_price:,.2f}", "Manual Tier 1")
 col3.metric("Invested Capital", f"${total_spent:,.2f}", f"{invested_pct_of_active:.1f}% Active")
 col4.metric("Average Purchase Price", f"${avg_price:,.2f}")
 col5.metric("Position & Tier", f"{total_shares:,.0f} shares", f"Tier {current_tier:.1f} / 40")
@@ -294,20 +279,6 @@ col5.metric("Position & Tier", f"{total_shares:,.0f} shares", f"Tier {current_ti
 st.divider()
 
 # --- Pre-calculate Tiers (Tier 0 = Tier 1 + 5%, Tier 1 = Base, Tier 2~40 = Prev - 5%) ---
-temp_tiers = []
-temp_tiers.append((0, tier_0_price))
-
-prev_buy = tier_1_price
-for t in range(1, 41):
-    if t == 1:
-        buy_p = tier_1_price
-    else:
-        buy_p = prev_buy * (1.0 - 0.05)
-    prev_buy = buy_p
-    temp_tiers.append((t, buy_p))
-
-tiers_1_40 = temp_tiers[1:]  # Tiers 1 to 40
-
 target_tier_idx = 1
 for t, buy_p in tiers_1_40:
     if current_soxl_price <= buy_p:
