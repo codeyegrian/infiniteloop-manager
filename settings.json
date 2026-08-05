@@ -4,7 +4,7 @@
     "custom_active_capital": 50000.0,
     "active_ratio": 50.0,
     "custom_peak": 0.0,
-    "use_52w_high": true,
+    "use_52w_high": false,
     "col_widths": {
         "Tier": 40,
         "\ub9e4\uc218": 40,
