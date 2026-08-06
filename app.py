@@ -16,7 +16,7 @@ except Exception:
     GITHUB_TOKEN = ""
     REPO_NAME = "codeyegrian/infiniteloop-manager"
 
-BRANCH = "master"
+BRANCH = "main"
 
 HEADERS = {
     "Authorization": f"Bearer {GITHUB_TOKEN}",
@@ -48,14 +48,14 @@ def github_load_file(filename, default_value):
 
 def github_save_file(filename, data):
     if not GITHUB_TOKEN:
-        import json
+        import os
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
-        return
+        return True, "Saved locally"
         
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
     try:
-        get_resp = requests.get(url, headers=HEADERS, timeout=5)
+        get_resp = requests.get(f"{url}?ref={BRANCH}", headers=HEADERS, timeout=5)
         sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
         
         json_str = json.dumps(data, indent=4, ensure_ascii=False)
@@ -69,9 +69,13 @@ def github_save_file(filename, data):
         if sha:
             payload["sha"] = sha
             
-        requests.put(url, headers=HEADERS, json=payload, timeout=5)
-    except Exception:
-        pass
+        put_resp = requests.put(url, headers=HEADERS, json=payload, timeout=5)
+        if put_resp.status_code in [200, 201]:
+            return True, "Successfully updated GitHub!"
+        else:
+            return False, f"GitHub Error {put_resp.status_code}: {put_resp.text}"
+    except Exception as e:
+        return False, f"Exception: {str(e)}"
 
 # --- Load & Save Helpers via GitHub ---
 def load_settings():
@@ -557,34 +561,58 @@ with st.form("trade_form", clear_on_submit=True):
             "Tier": float(tier_add)
         }
         st.session_state.trades.append(new_trade)
+        st.session_state.trades = sorted(st.session_state.trades, key=lambda x: str(x.get("Date", "")), reverse=True)
         save_trades(st.session_state.trades)
-        st.session_state.trades = load_trades()
+        
+        if "trade_history_editor" in st.session_state:
+            del st.session_state["trade_history_editor"]
+            
         st.rerun()
 
 # --- Editable & Sortable Trade History Section ---
-st.subheader("📋 Trade History (Click any column header to sort)")
+st.subheader("📋 Trade History (Newest First)")
 
-if not df_trades.empty:
+if st.session_state.trades:
+    sorted_trades = sorted(st.session_state.trades, key=lambda x: str(x.get("Date", "")), reverse=True)
+    df_trades = pd.DataFrame(sorted_trades)
     df_trades["Date"] = df_trades["Date"].astype(str)
     
-    delta_display_df = df_trades[["Date", "Type", "Price", "Qty", "Amount", "Tier"]].copy()
-    
     edited_df = st.data_editor(
-        delta_display_df,
+        df_trades[["Date", "Type", "Price", "Qty", "Amount", "Tier"]],
         num_rows="dynamic",
         use_container_width=True,
+        key="trade_history_editor"
     )
 
-    updated_trades = edited_df.to_dict(orient="records")
-    if updated_trades != st.session_state.trades:
-        save_trades(updated_trades)
-        st.session_state.trades = load_trades()
-        st.rerun()
+    # Automatically detect and save changes from the table editor instantly
+    if edited_df is not None:
+        updated_records = edited_df.to_dict(orient="records")
+        cleaned_records = []
+        for r in updated_records:
+            if r.get("Date") and str(r.get("Date")) != "nan":
+                p_val = float(r.get("Price", 0.0))
+                q_val = float(r.get("Qty", 0.0))
+                cleaned_records.append({
+                    "Date": str(r.get("Date")),
+                    "Type": str(r.get("Type", "BUY")),
+                    "Price": p_val,
+                    "Qty": q_val,
+                    "Amount": float(round(p_val * q_val, 2)),
+                    "Tier": float(r.get("Tier", 1.0))
+                })
+        
+        cleaned_records = sorted(cleaned_records, key=lambda x: str(x.get("Date", "")), reverse=True)
+        
+        if cleaned_records != sorted_trades:
+            st.session_state.trades = cleaned_records
+            save_trades(cleaned_records)
+            st.rerun()
 
-    (st.button("Clear All History (Cycle Reset)"))
-    if st.session_state.get("clear_clicked", False):
+    if st.button("Clear All History (Cycle Reset)"):
         st.session_state.trades = []
         save_trades([])
+        if "trade_history_editor" in st.session_state:
+            del st.session_state["trade_history_editor"]
         st.rerun()
 else:
     st.info("No trade history recorded yet.")
