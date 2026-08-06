@@ -206,10 +206,10 @@ st.sidebar.info(f"**0 Tier (Tier 1 + 5%):** ${tier_0_price:,.2f}")
 st.sidebar.divider()
 st.sidebar.subheader("📐 Table Column Widths (px)")
 default_widths = settings.get("col_widths", {
-    "Tier": 60, "매수": 100, "수량": 80, "매도": 100, 
-    "매수기준": 90, "매도기준": 90, "시드비율": 90, 
-    "배정시드": 100, "1Tier대비": 100, "매수 (입력)": 100, 
-    "실수량": 80, "예상": 80, "실매수": 80
+    "Tier": 40, "매수": 80, "수량": 40, "매도": 80, 
+    "매수기준": 60, "매도기준": 60, "시드비율": 60, 
+    "배정시드": 80, "1Tier대비": 80, "매수 (입력)": 40, 
+    "실수량": 0, "예상": 40, "실매수": 40
 })
 
 col_widths = {}
@@ -237,11 +237,13 @@ if not df_trades.empty:
     total_spent = df_trades["Amount"].sum()
     total_shares = df_trades["Qty"].sum()
     avg_price = total_spent / total_shares if total_shares > 0 else 0.0
+    tp_10_price = avg_price * 1.10  # 거래 내역이 있을 때 10% 익절가 계산
     current_tier = df_trades["Tier"].sum()
 else:
     total_spent = 0.0
     total_shares = 0.0
     avg_price = 0.0
+    tp_10_price = 0.0  # 거래 내역이 없을 때 0.0으로 초기화
     current_tier = 0.0
 
 # --- 티어 미리 계산 (순서 정렬) ---
@@ -430,20 +432,57 @@ with c_crash_buy:
         st.markdown(html_content, unsafe_allow_html=True)
     else:
         st.info("마지막 40티어 도달")
+# 현재까지 저장된 모든 거래 내역(trades)에서 'Tier' 컬럼의 합을 구함
+# 티어 테이블 수량 기반으로 T값 미리 계산
+table_calculated_t = 0.0
+for t, buy_p in tiers_1_40:
+    filled_q = tier_filled_shares.get(t, 0)
+    sug_q = int(unit_capital // buy_p) if buy_p > 0 else 0
+    if sug_q > 0 and filled_q > 0:
+        table_calculated_t += round(filled_q / sug_q, 2)
+
+current_tier = table_calculated_t
+
+# 이렇게 계산된 current_tier를 별가 공식에 대입합니다.
+star_percent = 20.0 - (1.0 * current_tier)
+star_price = avg_price * (1.0 + (star_percent / 100.0))
+
 
 with c_sell:
-    st.markdown("### 🎯 Take Profit 가이드")
+    st.markdown("### 🎯 Take Profit & Star Guide")
     if avg_price > 0 and total_shares > 0:
-        p_10 = avg_price * 1.10
+        # Exact Laoer V4 formula allowing negative percentages when T > 20
+        star_percent = 20.0 - (1.0 * current_tier)
+        star_price = avg_price * (1.0 + (star_percent / 100.0))
+        quarter_qty = max(1, int(total_shares / 4.0))
+        
+        # Standard Take Profit Target (Full Cycle Reset)
         p_20 = avg_price * 1.20
-        qty_half = int(total_shares / 2)
         qty_all = int(total_shares)
         
-        st.success(f"10% 절반 익절 (${p_10:,.2f})\n\n매도: {qty_half}주")
-        st.success(f"20% 전량 익절 (${p_20:,.2f})\n\n매도: {qty_all}주 (사이클 종료)")
+        # Display Star Price Guide matching the other program
+        # 'Take Profit & Star Guide' 영역의 별가 익절 카드 수정
+        st.success(f"""
+         ⭐ **별가 (Star Price) 익절**
+
+         **현재 T값:** {current_tier:.2f} | **별가 비율:** {star_percent:.2f}%
+
+         * **목표가 (별가):** ${star_price:,.2f}
+         * **10% 익절가:** ${tp_10_price:,.2f}
+         * **매도 추천:** 1/4 쿼터 ({quarter_qty}주)
+         * **체결 시:** T값 → T * 0.75
+         """)
+    
+        
+        # Display Full Take Profit Guide
+        st.info(
+            f"🎯 **전량 익절 (20%)**\n\n"
+            f"* 목표가: **${p_20:,.2f}**\n"
+            f"* 매도 추천: 전량 **{qty_all}주** (사이클 종료)"
+        )
     else:
         st.info("보유 포지션 없음")
-
+        
 st.divider()
 
 # --- Lower Section: Master Grid Table (Tier 0 + Tiers 1-40) ---
@@ -467,9 +506,9 @@ tier_data.append({
     "배정시드": "-",
     "1Tier대비": "+5.00%",
     "매수 (입력)": "-",
-    "실수량": "-",
+    "실매수": "-",
     "예상": "-",
-    "실매수": "-"
+    
 })
 
 for t, buy_p in tiers_1_40:
@@ -481,7 +520,10 @@ for t, buy_p in tiers_1_40:
     input_bought_qty = tier_filled_shares.get(t, 0)
     cum_actual_shares += input_bought_qty
     cum_real_buy_shares += input_bought_qty
-    
+
+    # 가장 심플한 방식: [매수 (입력) 수량] / [해당 티어 목표 수량]
+    input_tier_val = round(input_bought_qty / suggested_shares, 2) if suggested_shares > 0 else 0.0
+
     tier_data.append({
         "Tier": str(t),
         "매수": round(buy_p, 2),
@@ -493,12 +535,15 @@ for t, buy_p in tiers_1_40:
         "배정시드": round(unit_capital, 2),
         "1Tier대비": f"{drop_pct:.2f}%",
         "매수 (입력)": input_bought_qty,
-        "실수량": cum_actual_shares,
+        "실매수": cum_actual_shares,
         "예상": cum_shares,
-        "실매수": cum_real_buy_shares
+        "티어값": input_tier_val  # 매수(입력) / 수량 결과값 바로 출력
     })
 
 df_tiers = pd.DataFrame(tier_data)
+
+# 테이블의 "티어값" 컬럼 합계로 current_tier를 덮어씌움!
+current_tier = sum(float(row.get("티어값", 0)) for row in tier_data)
 
 def highlight_current_price_tier(row):
     t_val = row["Tier"]
@@ -521,7 +566,8 @@ def highlight_current_price_tier(row):
 styled_df = df_tiers.style.apply(highlight_current_price_tier, axis=1).format({
     "매수": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x,
     "매도": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x,
-    "배정시드": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x
+    "배정시드": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x,
+    "티어값": lambda x: f"{x:.2f}" if isinstance(x, (int, float)) else x
 })
 
 column_configs = {
@@ -540,7 +586,7 @@ st.dataframe(
 
 st.divider()
 
-# --- Trade Input Section ---
+# --- Trade Input Section with Auto-Calculated T Value ---
 st.subheader("📝 Record Executed Trade")
 
 with st.form("trade_form", clear_on_submit=True):
@@ -548,7 +594,20 @@ with st.form("trade_form", clear_on_submit=True):
     date_input_val = f_col1.date_input("Trade Date")
     price = f_col2.number_input("Execution Price ($)", min_value=0.01, value=float(round(target_tier_price, 2)), step=0.1)
     qty = f_col3.number_input("Execution Quantity (Shares)", min_value=1.0, value=float(max(1.0, recommended_buy_qty)), step=1.0)
-    tier_add = f_col4.selectbox("Executed Tier Weight", [0.5, 1.0, 1.5, 2.0])
+    
+    # Automatically calculate suggested T weight based on standard tier quantity
+    # 소수점 2자리까지 정확히 계산되도록 round 자릿수 및 number_input step 변경
+    suggested_tier_weight = round(qty / standard_tier_qty, 2) if standard_tier_qty > 0 else 0.5
+    suggested_tier_weight = max(0.01, suggested_tier_weight) # 최소 안전 경계값
+
+    tier_add = f_col4.number_input(
+        "Auto-Calculated T Weight",
+        min_value=0.01,
+        max_value=5.0,
+        value=float(suggested_tier_weight),
+        step=0.01,  # 0.01 단위로 조절 가능하도록 변경
+        help="Automatically calculated based on execution quantity vs standard tier quantity."
+    )
     
     submitted = st.form_submit_button("Save Trade")
     if submitted:
@@ -562,12 +621,25 @@ with st.form("trade_form", clear_on_submit=True):
         }
         st.session_state.trades.append(new_trade)
         st.session_state.trades = sorted(st.session_state.trades, key=lambda x: str(x.get("Date", "")), reverse=True)
+        
+        # --- 이 부분을 추가하여 파일/GitHub에 실제 저장하도록 수정 ---
         save_trades(st.session_state.trades)
         
-        if "trade_history_editor" in st.session_state:
-            del st.session_state["trade_history_editor"]
+        st.rerun()  # 저장 후 화면을 새로고침하여 즉시 반영
+        
+def save_trades(trades):
+    sorted_trades = sorted(trades, key=lambda x: str(x.get("Date", "")), reverse=True)
+    if not GITHUB_TOKEN:
+        import os
+        try:
+            with open("trades.json", "w", encoding="utf-8") as f:
+                json.dump(sorted_trades, f, indent=4, ensure_ascii=False)
+            return True, "Saved locally"
+        except Exception as e:
+            return False, f"Local save error: {str(e)}"
             
-        st.rerun()
+    success, msg = github_save_file("trades.json", sorted_trades)
+    return success, msg
 
 # --- Editable & Sortable Trade History Section ---
 st.subheader("📋 Trade History (Newest First)")
