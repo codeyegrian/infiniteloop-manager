@@ -1,7 +1,7 @@
 {
     "total_capital": 100000.0,
     "use_custom_active": true,
-    "custom_active_capital": 80000.0,
+    "custom_active_capital": 60000.0,
     "active_ratio": 50.0,
     "manual_tier_1": 302.0,
     "col_widths": {
