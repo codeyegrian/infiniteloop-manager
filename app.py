@@ -6,6 +6,21 @@ import requests
 import yfinance as yf
 from datetime import date
 
+def get_5ma_gap(ticker_symbol):
+    # 5일 이동평균 계산을 위해 최근 10일치 데이터 호출
+    ticker = yf.Ticker(ticker_symbol)
+    hist = ticker.history(period="10d")
+    
+    if len(hist) < 5:
+        return None, None, None
+    
+    current_price = float(hist['Close'].iloc[-1])
+    ma5 = float(hist['Close'].rolling(window=5).mean().iloc[-1])
+    
+    # 이격률(%) 계산
+    gap_pct = ((current_price - ma5) / ma5) * 100
+    return current_price, ma5, gap_pct
+
 st.set_page_config(page_title="Aiden Infinite Loop Strategy Live Manager", layout="wide")
 
 # --- GitHub API Sync Helpers ---
@@ -77,7 +92,7 @@ def github_save_file(filename, data):
     except Exception as e:
         return False, f"Exception: {str(e)}"
 
-# --- Load & Save Helpers via GitHub ---
+# --- Load & Save Helpers ---
 def load_settings():
     default_s = {
         "total_capital": 65000.0, 
@@ -101,12 +116,12 @@ def save_settings(settings_dict):
 def load_trades():
     loaded = github_load_file("trades.json", [])
     if isinstance(loaded, list):
-        return sorted(loaded, key=lambda x: x.get("Date", ""), reverse=True)
+        return sorted(loaded, key=lambda x: str(x.get("Date", "")), reverse=True)
     return []
 
 def save_trades(trades):
-    sorted_trades = sorted(trades, key=lambda x: x.get("Date", ""), reverse=True)
-    github_save_file("trades.json", sorted_trades)
+    sorted_trades = sorted(trades, key=lambda x: str(x.get("Date", "")), reverse=True)
+    return github_save_file("trades.json", sorted_trades)
 
 if "settings" not in st.session_state:
     st.session_state.settings = load_settings()
@@ -185,17 +200,12 @@ st.sidebar.info(f"**전체자금 (Total):** ${total_capital:,.2f}\n\n"
 st.sidebar.divider()
 st.sidebar.subheader("🎯 Tier 1 Settings (Manual)")
 
-# 52주 신고가 체크박스를 완전히 제거하고 순수 수동 입력만 유지
 manual_tier_1_val = st.sidebar.number_input(
     "Manual Tier 1 Price ($)", 
     value=float(settings.get("manual_tier_1", 302.0)), 
     step=0.5
 )
-tier_1_price = manual_tier_1_val
-
-# 0이거나 비어있을 경우 절대 0이 되지 않도록 강제 방어
-if not tier_1_price or tier_1_price <= 0:
-    tier_1_price = 302.0
+tier_1_price = manual_tier_1_val if manual_tier_1_val > 0 else 302.0
 
 reference_peak = tier_1_price
 tier_0_price = tier_1_price * 1.05
@@ -231,34 +241,36 @@ if updated_settings != settings:
 
 # --- Data Calculations ---
 df_trades = pd.DataFrame(st.session_state.trades)
-
 if not df_trades.empty:
-    df_trades["Amount"] = df_trades["Price"] * df_trades["Qty"]
-    total_spent = df_trades["Amount"].sum()
-    total_shares = df_trades["Qty"].sum()
+    if "Type" not in df_trades.columns:
+        df_trades["Type"] = "BUY"
+
+    buy_mask = df_trades["Type"].str.upper() == "BUY"
+    sell_mask = df_trades["Type"].str.upper() == "SELL"
+
+    total_spent = float(df_trades.loc[buy_mask, "Amount"].abs().sum() - df_trades.loc[sell_mask, "Amount"].abs().sum())
+    total_shares = float(df_trades.loc[buy_mask, "Qty"].abs().sum() - df_trades.loc[sell_mask, "Qty"].abs().sum())
+
+    total_spent = max(0.0, total_spent)
+    total_shares = max(0.0, total_shares)
+
     avg_price = total_spent / total_shares if total_shares > 0 else 0.0
-    tp_10_price = avg_price * 1.10  # 거래 내역이 있을 때 10% 익절가 계산
-    current_tier = df_trades["Tier"].sum()
+    tp_10_price = avg_price * 1.10 if total_shares > 0 else 0.0
+
+    one_t_capital = active_capital / 40.0 if active_capital > 0 else 0.0
+    current_tier = round(total_spent / one_t_capital, 2) if one_t_capital > 0 else 0.0
 else:
     total_spent = 0.0
     total_shares = 0.0
     avg_price = 0.0
-    tp_10_price = 0.0  # 거래 내역이 없을 때 0.0으로 초기화
+    tp_10_price = 0.0
     current_tier = 0.0
 
-# --- 티어 미리 계산 (순서 정렬) ---
-tier_0_price = tier_1_price * 1.05  
-reference_peak = tier_1_price  
-
-temp_tiers = []
-temp_tiers.append((0, tier_0_price))
-
+# --- Pre-calculate Tiers ---
+temp_tiers = [(0, tier_0_price)]
 prev_buy = tier_1_price
 for t in range(1, 41):
-    if t == 1:
-        buy_p = tier_1_price
-    else:
-        buy_p = prev_buy * (1.0 - 0.05)
+    buy_p = tier_1_price if t == 1 else prev_buy * 0.95
     prev_buy = buy_p
     temp_tiers.append((t, buy_p))
 
@@ -267,7 +279,7 @@ tiers_1_40 = temp_tiers[1:]
 drop_from_peak_pct = ((current_soxl_price - tier_1_price) / tier_1_price) * 100
 invested_pct_of_active = (total_spent / active_capital) * 100 if active_capital > 0 else 0.0
 
-# --- Top Summary Dashboard (5 Columns) ---
+# --- Top Summary Dashboard ---
 col1, col2, col3, col4, col5 = st.columns(5)
 
 ext_text = f"{drop_from_peak_pct:.1f}% from T1"
@@ -284,7 +296,7 @@ col5.metric("Position & Tier", f"{total_shares:,.0f} shares", f"Tier {current_ti
 
 st.divider()
 
-# --- Pre-calculate Tiers (Tier 0 = Tier 1 + 5%, Tier 1 = Base, Tier 2~40 = Prev - 5%) ---
+# --- Target Tier Calculations ---
 target_tier_idx = 1
 for t, buy_p in tiers_1_40:
     if current_soxl_price <= buy_p:
@@ -312,7 +324,7 @@ if not df_trades.empty:
 
 target_tier_price = dict(tiers_1_40)[target_tier_idx]
 standard_tier_qty = int(unit_capital // target_tier_price) if target_tier_price > 0 else 0
-half_tier_buy_qty = max(1, int(standard_tier_qty / 2))  
+half_tier_buy_qty = max(1, int(standard_tier_qty / 2))
 current_filled_qty = int(tier_filled_shares.get(target_tier_idx, 0))
 remaining_qty = standard_tier_qty - current_filled_qty
 
@@ -356,6 +368,12 @@ action_summary_str = " | ".join(action_summary_parts)
 st.subheader("🛒 Today's Buy & Sell Guides")
 st.info(f"**🎯 오늘의 핵심 요약 (Action Summary):** {action_summary_str}")
 
+ticker_to_check = 'SOXL'
+price, ma5, gap = get_5ma_gap(ticker_to_check)
+
+if gap is not None:
+    st.info(f"📈 {ticker_to_check} 5일선 이격률: {gap:.2f}% (현재가: ${price:.2f} / 5일선: ${ma5:.2f})")
+
 c_avg_buy, c_tier_buy, c_crash_buy, c_sell = st.columns(4)
 
 with c_avg_buy:
@@ -370,10 +388,7 @@ with c_avg_buy:
                 f"* 예상 필요자금: ${est_cost_avg:,.2f}"
             )
         else:
-            st.info(
-                f"평단매수 비추천\n\n"
-                f"현재가 ${current_soxl_price:,.2f} >= 평단 ${avg_price:,.2f}"
-            )
+            st.info(f"평단매수 비추천\n\n현재가 ${current_soxl_price:,.2f} >= 평단 ${avg_price:,.2f}")
     else:
         st.info("보유 포지션 없음")
     
@@ -382,118 +397,123 @@ with c_avg_buy:
 
 with c_tier_buy:
     st.markdown(f"### 📍 티어매수 가이드 (Tier {target_tier_idx})")
-    
+
     target_dates = tier_trade_dates.get(target_tier_idx, [])
     dates_str = ", ".join(target_dates) if target_dates else "-"
-    
+
+    tier_mult = 0.5
+    condition_text = ""
+    if gap is not None:
+        if gap >= 0:
+            tier_mult, condition_text = 0.5, "5일선 위"
+        elif -3.0 <= gap < 0:
+            tier_mult, condition_text = 0.75, "0% ~ -3%"
+        elif -6.0 <= gap < -3.0:
+            tier_mult, condition_text = 1.0, "-3% ~ -6%"
+        elif -10.0 <= gap < -6.0:
+            tier_mult, condition_text = 1.5, "-6% ~ -10%"
+        else:
+            tier_mult, condition_text = 2.0, "-10% 이하"
+
+    target_tier_qty = int(standard_tier_qty * tier_mult)
+    recommended_buy_qty = max(0, target_tier_qty - current_filled_qty)
     est_cost_tier = recommended_buy_qty * target_tier_price
-    
-    if current_filled_qty >= standard_tier_qty:
-        st.warning(
-            f"티어매수 비추천\n\n"
-            f"tier {target_tier_idx}  {dates_str}  {current_filled_qty} / {standard_tier_qty} 매수완료"
-        )
+
+    if current_filled_qty >= target_tier_qty:
+        st.warning(f"티어매수 완료 ({current_filled_qty}/{target_tier_qty}주 보유)")
     elif current_filled_qty > 0:
         st.success(
-            f"티어매수 추가 추천 (0.5티어)\n\n"
-            f"tier {target_tier_idx}  {dates_str}  {current_filled_qty} / {standard_tier_qty} 보유\n\n"
-            f"* 잔여 수량 중 0.5티어 ({recommended_buy_qty}주) 매수 필요"
+            f"티어매수 추가 추천 ({tier_mult}티어)\n"
+            f"tier {target_tier_idx} ({dates_str}) {current_filled_qty} / {target_tier_qty} 보유\n"
+            f"* 잔여 수량 중 {recommended_buy_qty}주 매수 필요"
         )
     else:
         st.success(
-            f"티어매수 추천 (0.5티어)\n\n"
-            f"tier {target_tier_idx}  0 / {standard_tier_qty} 보유\n\n"
-            f"* 추천 수량: 0.5티어 ({recommended_buy_qty}주)"
+            f"티어매수 추천 ({tier_mult}티어)\n"
+            f"tier {target_tier_idx} 0 / {target_tier_qty} 보유\n"
+            f"* 추천 수량: {recommended_buy_qty}주"
         )
-    
+
     st.info(
+        f"* 5일선 이격률: {gap:.2f}% ({condition_text})\n" if gap is not None else ""
         f"* 목표 가격: ${target_tier_price:,.2f}\n"
-        f"* 추천 수량: {recommended_buy_qty}주 (0.5티어)\n"
+        f"* 추천 수량: {recommended_buy_qty}주 ({tier_mult}티어)\n"
         f"* 예상 필요자금: ${est_cost_tier:,.2f}"
     )
 
 with c_crash_buy:
-    st.markdown("### 🚨 폭락장 대비 추가매수")
-    
-    next_tiers_to_show = [t for t in range(target_tier_idx + 1, min(41, target_tier_idx + 6))]
-    dict_t_1_40 = dict(tiers_1_40)
-    if next_tiers_to_show:
-        html_content = "<div style='background-color: #f8d7da; padding: 15px; border-radius: 5px; font-size: 14px; line-height: 1.6; color: #721c24;'>하위 5개 티어 현황:<br><br>"
-        for nt in next_tiers_to_show:
-            nt_price = dict_t_1_40.get(nt, 0)
-            nt_qty = int(unit_capital // nt_price) if nt_price > 0 else 0
-            filled_qty_nt = tier_filled_shares.get(nt, 0)
-            
-            if filled_qty_nt >= nt_qty and nt_qty > 0:
-                html_content += f"<span style='color: #0000FF; font-weight: bold;'>tier {nt} : ${nt_price:,.2f} | {filled_qty_nt} / {nt_qty}주</span><br><br>"
-            else:
-                html_content += f"tier {nt} : ${nt_price:,.2f} | {filled_qty_nt} / {nt_qty}주<br><br>"
-        html_content += "</div>"
-        st.markdown(html_content, unsafe_allow_html=True)
-    else:
-        st.info("마지막 40티어 도달")
-# 현재까지 저장된 모든 거래 내역(trades)에서 'Tier' 컬럼의 합을 구함
-# 티어 테이블 수량 기반으로 T값 미리 계산
-table_calculated_t = 0.0
-for t, buy_p in tiers_1_40:
-    filled_q = tier_filled_shares.get(t, 0)
-    sug_q = int(unit_capital // buy_p) if buy_p > 0 else 0
-    if sug_q > 0 and filled_q > 0:
-        table_calculated_t += round(filled_q / sug_q, 2)
+    st.markdown("### 🚨 5일선 매매 가이드")
 
-current_tier = table_calculated_t
+    if gap is not None:
+        st.info(
+            f"📊 **MA5 주가 가이드**\n\n"
+            f"* **현재 5일선 이격률:** `{gap:.2f}%` ➔ **적용: {condition_text}**\n"
+            f"* **오늘 추천 배율:** `{tier_mult}T`"
+        )
 
-# 이렇게 계산된 current_tier를 별가 공식에 대입합니다.
+    curr_p = current_soxl_price
+    daily_capital = unit_capital
+
+    if curr_p > 0 and daily_capital > 0:
+        base_qty = int(daily_capital // curr_p)
+
+        q_05 = int(base_qty * 0.5)
+        q_075 = int(base_qty * 0.75)
+        q_10 = int(base_qty * 1.0)
+        q_15 = int(base_qty * 1.5)
+        q_20 = int(base_qty * 2.0)
+
+        container_html = (
+            f"<div style='background-color: #f8d7da; padding: 15px; border-radius: 8px; "
+            f"font-size: 13px; color: #333; font-family: sans-serif;'>"
+            f"<b>📍 (${daily_capital:,.2f}) / 현재가 (${curr_p:,.2f}) </b><br><br>"
+            f"• <b>5일선 위 (0.5T):</b> {q_05}주<br>"
+            f"• <b>0% ~ -3% (0.75T):</b> {q_075}주<br>"
+            f"• <b>-3% ~ -6% (1.0T):</b> {q_10}주<br>"
+            f"• <b>-6% ~ -10% (1.5T):</b> {q_15}주<br>"
+            f"• <b>-10% 이하 (2.0T):</b> {q_20}주"
+            f"</div>"
+        )
+        st.markdown(container_html, unsafe_allow_html=True)
+
 star_percent = 20.0 - (1.0 * current_tier)
 star_price = avg_price * (1.0 + (star_percent / 100.0))
 
-
 with c_sell:
-    st.markdown("### 🎯 Take Profit & Star Guide")
+    st.markdown("### 🎯 매도 가이드")
     if avg_price > 0 and total_shares > 0:
-        # Exact Laoer V4 formula allowing negative percentages when T > 20
-        star_percent = 20.0 - (1.0 * current_tier)
-        star_price = avg_price * (1.0 + (star_percent / 100.0))
         quarter_qty = max(1, int(total_shares / 4.0))
-        
-        # Standard Take Profit Target (Full Cycle Reset)
         p_20 = avg_price * 1.20
         qty_all = int(total_shares)
         
-        # Display Star Price Guide matching the other program
-        # 'Take Profit & Star Guide' 영역의 별가 익절 카드 수정
         st.success(f"""
-         ⭐ **별가 (Star Price) 익절**
+         ⭐ **별값**
 
-         **현재 T값:** {current_tier:.2f} | **별가 비율:** {star_percent:.2f}%
+         **T값:** {current_tier:.2f} | **별가:** {star_percent:.2f}%
 
-         * **목표가 (별가):** ${star_price:,.2f}
-         * **10% 익절가:** ${tp_10_price:,.2f}
-         * **매도 추천:** 1/4 쿼터 ({quarter_qty}주)
+         * **매도 ★:** ${star_price:,.2f}
+         * **10% :** ${tp_10_price:,.2f}
+         * **1/4 쿼터:** {quarter_qty}주
          * **체결 시:** T값 → T * 0.75
          """)
-    
         
-        # Display Full Take Profit Guide
         st.info(
-            f"🎯 **전량 익절 (20%)**\n\n"
-            f"* 목표가: **${p_20:,.2f}**\n"
-            f"* 매도 추천: 전량 **{qty_all}주** (사이클 종료)"
+            f"🎯 **20% 익절**\n\n"
+            f"* 지정가: **${p_20:,.2f}**\n"
+            f"* 전량 **{qty_all}주** (사이클 종료)"
         )
     else:
         st.info("보유 포지션 없음")
-        
+
 st.divider()
 
-# --- Lower Section: Master Grid Table (Tier 0 + Tiers 1-40) ---
+# --- Lower Section: Master Grid Table ---
 st.subheader("📊 Master Grid & Target Price Table (Live Price Highlighted)")
 
 tier_data = []
 cum_shares = 0
 cum_actual_shares = 0
-cum_real_buy_shares = 0
 
-# 0티어 (1티어 기준 +5%)
 t0_num, t0_price = temp_tiers[0]
 tier_data.append({
     "Tier": "0 (T1+5%)",
@@ -508,8 +528,42 @@ tier_data.append({
     "매수 (입력)": "-",
     "실매수": "-",
     "예상": "-",
-    
+    "티어값": 0.0
 })
+
+# --- tier_filled_shares를 계산하는 기존 구간을 이 코드로 교체하세요 ---
+tier_filled_shares = {t: 0 for t in range(1, 41)}
+tier_trade_dates = {t: [] for t in range(1, 41)}
+
+if not df_trades.empty:
+    for _, trade in df_trades.iterrows():
+        t_price = float(trade["Price"])
+        t_qty = float(trade["Qty"])
+        t_type = str(trade.get("Type", "BUY")).upper()
+        t_date = str(trade.get("Date", ""))
+        
+        # Find the best matching tier where t_price is closest to or falls within the tier buy price
+        matched_tier = 1
+        min_diff = float('inf')
+        
+        for t, buy_p in tiers_1_40:
+            diff = abs(buy_p - t_price)
+            if diff < min_diff:
+                min_diff = diff
+                matched_tier = t
+
+        # Add for BUY, subtract for SELL
+        if t_type == "SELL":
+            tier_filled_shares[matched_tier] -= int(t_qty)
+        else:
+            tier_filled_shares[matched_tier] += int(t_qty)
+            
+        if t_date and t_date not in tier_trade_dates[matched_tier]:
+            tier_trade_dates[matched_tier].append(t_date)
+
+    # Prevent negative values per tier
+    for t in tier_filled_shares:
+        tier_filled_shares[t] = max(0, tier_filled_shares[t])
 
 for t, buy_p in tiers_1_40:
     drop_pct = ((buy_p - tier_1_price) / tier_1_price) * 100
@@ -519,9 +573,7 @@ for t, buy_p in tiers_1_40:
     
     input_bought_qty = tier_filled_shares.get(t, 0)
     cum_actual_shares += input_bought_qty
-    cum_real_buy_shares += input_bought_qty
 
-    # 가장 심플한 방식: [매수 (입력) 수량] / [해당 티어 목표 수량]
     input_tier_val = round(input_bought_qty / suggested_shares, 2) if suggested_shares > 0 else 0.0
 
     tier_data.append({
@@ -537,12 +589,10 @@ for t, buy_p in tiers_1_40:
         "매수 (입력)": input_bought_qty,
         "실매수": cum_actual_shares,
         "예상": cum_shares,
-        "티어값": input_tier_val  # 매수(입력) / 수량 결과값 바로 출력
+        "티어값": input_tier_val
     })
 
 df_tiers = pd.DataFrame(tier_data)
-
-# 테이블의 "티어값" 컬럼 합계로 current_tier를 덮어씌움!
 current_tier = sum(float(row.get("티어값", 0)) for row in tier_data)
 
 def highlight_current_price_tier(row):
@@ -551,18 +601,17 @@ def highlight_current_price_tier(row):
         return ['background-color: #fff3cd; color: #856404; font-weight: bold'] * len(row)
     
     try:
-        t_num = int(t_val)
+        buy_price = float(row["매수"])
     except Exception:
         return [''] * len(row)
         
-    if t_num < target_tier_idx:
-        return ['background-color: #d4edda; color: #155724'] * len(row)
-    elif t_num == target_tier_idx:
+    # 현재가와 티어 매수가를 직접 비교하여 현재 구간에 맞는 곳을 하이라이트
+    # (테이블 정렬 방향에 맞춰 부등호를 조절할 수 있습니다)
+    if current_soxl_price >= buy_price:
         return ['background-color: #cce5ff; color: #004085; font-weight: bold'] * len(row)
     else:
-        str_bg = 'background-color: #f8d7da; color: #721c24'
-        return [str_bg] * len(row)
-
+        return ['background-color: #f8d7da; color: #721c24'] * len(row)
+    
 styled_df = df_tiers.style.apply(highlight_current_price_tier, axis=1).format({
     "매수": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x,
     "매도": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x,
@@ -586,60 +635,44 @@ st.dataframe(
 
 st.divider()
 
-# --- Trade Input Section with Auto-Calculated T Value ---
+# --- Trade Input Section ---
 st.subheader("📝 Record Executed Trade")
 
 with st.form("trade_form", clear_on_submit=True):
-    f_col1, f_col2, f_col3, f_col4 = st.columns(4)
-    date_input_val = f_col1.date_input("Trade Date")
-    price = f_col2.number_input("Execution Price ($)", min_value=0.01, value=float(round(target_tier_price, 2)), step=0.1)
-    qty = f_col3.number_input("Execution Quantity (Shares)", min_value=1.0, value=float(max(1.0, recommended_buy_qty)), step=1.0)
+    f_col1, f_col2, f_col3, f_col4, f_col5 = st.columns(5)
     
-    # Automatically calculate suggested T weight based on standard tier quantity
-    # 소수점 2자리까지 정확히 계산되도록 round 자릿수 및 number_input step 변경
-    suggested_tier_weight = round(qty / standard_tier_qty, 2) if standard_tier_qty > 0 else 0.5
-    suggested_tier_weight = max(0.01, suggested_tier_weight) # 최소 안전 경계값
+    date_input_val = f_col1.date_input("Trade Date")
+    trade_type_val = f_col2.selectbox("Trade Type", ["BUY", "SELL"])
+    price = f_col3.number_input("Execution Price ($)", min_value=0.01, value=float(round(target_tier_price, 2)))
+    qty = f_col4.number_input("Execution Quantity (Shares)", min_value=1.0, value=float(max(1.0, recommended_buy_qty)))
 
-    tier_add = f_col4.number_input(
+    suggested_tier_weight = round(qty / standard_tier_qty, 2) if standard_tier_qty > 0 else 0.5
+    suggested_tier_weight = max(0.01, suggested_tier_weight)
+
+    tier_add = f_col5.number_input(
         "Auto-Calculated T Weight",
         min_value=0.01,
         max_value=5.0,
         value=float(suggested_tier_weight),
-        step=0.01,  # 0.01 단위로 조절 가능하도록 변경
+        step=0.01,
         help="Automatically calculated based on execution quantity vs standard tier quantity."
     )
-    
+
     submitted = st.form_submit_button("Save Trade")
     if submitted:
         new_trade = {
             "Date": str(date_input_val),
-            "Type": "BUY",
+            "Type": trade_type_val,
             "Price": float(round(price, 2)),
             "Qty": float(qty),
             "Amount": float(round(price * qty, 2)),
-            "Tier": float(tier_add)
+            "Tier": float(tier_add if trade_type_val == "BUY" else -tier_add)
         }
+
         st.session_state.trades.append(new_trade)
         st.session_state.trades = sorted(st.session_state.trades, key=lambda x: str(x.get("Date", "")), reverse=True)
-        
-        # --- 이 부분을 추가하여 파일/GitHub에 실제 저장하도록 수정 ---
         save_trades(st.session_state.trades)
-        
-        st.rerun()  # 저장 후 화면을 새로고침하여 즉시 반영
-        
-def save_trades(trades):
-    sorted_trades = sorted(trades, key=lambda x: str(x.get("Date", "")), reverse=True)
-    if not GITHUB_TOKEN:
-        import os
-        try:
-            with open("trades.json", "w", encoding="utf-8") as f:
-                json.dump(sorted_trades, f, indent=4, ensure_ascii=False)
-            return True, "Saved locally"
-        except Exception as e:
-            return False, f"Local save error: {str(e)}"
-            
-    success, msg = github_save_file("trades.json", sorted_trades)
-    return success, msg
+        st.rerun()
 
 # --- Editable & Sortable Trade History Section ---
 st.subheader("📋 Trade History (Newest First)")
@@ -656,7 +689,6 @@ if st.session_state.trades:
         key="trade_history_editor"
     )
 
-    # Automatically detect and save changes from the table editor instantly
     if edited_df is not None:
         updated_records = edited_df.to_dict(orient="records")
         cleaned_records = []
