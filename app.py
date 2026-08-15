@@ -1,46 +1,55 @@
-import streamlit as st
-import pandas as pd
+"""
+추추무매
+Streamlit 앱 — app.py
+
+실행: streamlit run app.py
+배포: 이 파일 + requirements.txt 를 GitHub 저장소에 올리고
+      streamlit.io/cloud 에서 저장소를 연결하면 바로 웹페이지가 됩니다.
+
+거래 데이터는 data.json 파일에 저장되고, 시세는 Yahoo Finance에서 자동 조회됩니다.
+"""
+
 import json
-import base64
-import requests
+import os
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import streamlit as st
 import yfinance as yf
-from datetime import date
+from streamlit_autorefresh import st_autorefresh
 
-def get_5ma_gap(ticker_symbol):
-    # 5일 이동평균 계산을 위해 최근 10일치 데이터 호출
-    ticker = yf.Ticker(ticker_symbol)
-    hist = ticker.history(period="10d")
-    
-    if len(hist) < 5:
-        return None, None, None
-    
-    current_price = float(hist['Close'].iloc[-1])
-    ma5 = float(hist['Close'].rolling(window=5).mean().iloc[-1])
-    
-    # 이격률(%) 계산
-    gap_pct = ((current_price - ma5) / ma5) * 100
-    return current_price, ma5, gap_pct
+# 페이지 설정은 Streamlit UI 호출보다 먼저 실행합니다.
+st.set_page_config(page_title="추추무매 · 포트폴리오 대시보드", layout="centered")
 
-st.set_page_config(page_title="Aiden Infinite Loop Strategy Live Manager", layout="wide")
+# 60초마다 Yahoo 시세를 자동 갱신합니다.
+st_autorefresh(interval=60_000, key="yahoo_market_refresh")
 
-# --- GitHub API Sync Helpers ---
-try:
-    GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
-    REPO_NAME = st.secrets.get("REPO_NAME", "codeyegrian/infiniteloop-manager")
-except Exception:
-    GITHUB_TOKEN = ""
-    REPO_NAME = "codeyegrian/infiniteloop-manager"
-
-BRANCH = "main"
-
+# =============================================================================
+# 저장소 (GitHub 저장소의 data.json — 토큰이 없으면 로컬 파일로 자동 폴백)
+# =============================================================================
+def get_secret(key, default=""):
+    """st.secrets 에 없으면 환경변수, 그것도 없으면 default."""
+    try:
+        val = st.secrets.get(key, None)
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.environ.get(key, default)
+ 
+GITHUB_TOKEN = get_secret("GITHUB_TOKEN")
+REPO_NAME = get_secret("REPO_NAME")          # 예: "myid/myrepo"
+BRANCH = get_secret("BRANCH", "main")
+DATA_FILE = "data.json"                       # 저장소 루트 기준 파일명 (로컬 폴백 시에도 동일 파일명 사용)
+ 
 HEADERS = {
     "Authorization": f"Bearer {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github+json"
+    "Accept": "application/vnd.github+json",
 }
-
+ 
 def github_load_file(filename, default_value):
     if not GITHUB_TOKEN:
-        import os
         if os.path.exists(filename):
             try:
                 with open(filename, "r", encoding="utf-8") as f:
@@ -48,10 +57,10 @@ def github_load_file(filename, default_value):
             except Exception:
                 pass
         return default_value
-    
+ 
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
     try:
-        response = requests.get(url, headers=HEADERS, timeout=5)
+        response = requests.get(url, headers=HEADERS, params={"ref": BRANCH}, timeout=5)
         if response.status_code == 200:
             file_data = response.json()
             content_encoded = file_data.get("content", "")
@@ -60,663 +69,1261 @@ def github_load_file(filename, default_value):
     except Exception:
         pass
     return default_value
-
+ 
 def github_save_file(filename, data):
     if not GITHUB_TOKEN:
-        import os
         with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
+            json.dump(data, f, indent=2, ensure_ascii=False)
         return True, "Saved locally"
-        
+ 
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
     try:
         get_resp = requests.get(f"{url}?ref={BRANCH}", headers=HEADERS, timeout=5)
         sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
-        
-        json_str = json.dumps(data, indent=4, ensure_ascii=False)
+ 
+        json_str = json.dumps(data, indent=2, ensure_ascii=False)
         content_encoded = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
-        
+ 
         payload = {
-            "message": f"Update {filename} via Live Manager",
+            "message": f"Update {filename} via 추추무매 앱",
             "content": content_encoded,
-            "branch": BRANCH
+            "branch": BRANCH,
         }
         if sha:
             payload["sha"] = sha
-            
+ 
         put_resp = requests.put(url, headers=HEADERS, json=payload, timeout=5)
-        if put_resp.status_code in [200, 201]:
+        if put_resp.status_code in (200, 201):
             return True, "Successfully updated GitHub!"
         else:
             return False, f"GitHub Error {put_resp.status_code}: {put_resp.text}"
     except Exception as e:
         return False, f"Exception: {str(e)}"
 
-# --- Load & Save Helpers ---
-def load_settings():
-    default_s = {
-        "total_capital": 65000.0, 
-        "use_custom_active": False,
-        "custom_active_capital": 52000.0,
-        "active_ratio": 80.0,
-        "manual_tier_1": 302.0, 
-        "col_widths": {
-            "Tier": 60, "매수": 100, "수량": 80, "매도": 100, 
-            "매수기준": 90, "매도기준": 90, "시드비율": 90, 
-            "배정시드": 100, "1Tier대비": 100, "매수 (입력)": 100, 
-            "실수량": 80, "예상": 80, "실매수": 80
+# 데이터 구조 확장: 다중 포트폴리오(portfolios) 지원
+DEFAULT_DATA = {
+    "portfolios": [
+        {
+            "id": 1,
+            "name": "기본 포트폴리오",
+            "config": {
+                "symbol": "SOXL",
+                "splits": 40,
+                "capital": 20000.0,
+                "compounding": True
+            },
+            "price_history": [],
+            "rounds": []
         }
-    }
-    loaded = github_load_file("settings.json", default_s)
-    return loaded if isinstance(loaded, dict) else default_s
-
-def save_settings(settings_dict):
-    github_save_file("settings.json", settings_dict)
-
-def load_trades():
-    loaded = github_load_file("trades.json", [])
-    if isinstance(loaded, list):
-        return sorted(loaded, key=lambda x: str(x.get("Date", "")), reverse=True)
-    return []
-
-def save_trades(trades):
-    sorted_trades = sorted(trades, key=lambda x: str(x.get("Date", "")), reverse=True)
-    return github_save_file("trades.json", sorted_trades)
-
-if "settings" not in st.session_state:
-    st.session_state.settings = load_settings()
-
-if "trades" not in st.session_state:
-    st.session_state.trades = load_trades()
-
-st.title("⚡ Aiden Infinite Loop Strategy - SOXL Live Manager")
-
-# --- Fetch Live SOXL Price, 52-Week High & Extended Hours ---
-@st.cache_data(ttl=60)
-def get_soxl_market_data():
-    try:
-        ticker = yf.Ticker("SOXL")
-        hist = ticker.history(period="1y")
-        if not hist.empty:
-            current_p = float(hist["Close"].iloc[-1])
-            high_52w = float(hist["High"].max())
-            
-            info = ticker.info
-            regular_p = info.get("regularMarketPrice", current_p)
-            pre_p = info.get("preMarketPrice", None)
-            post_p = info.get("postMarketPrice", None)
-            
-            return regular_p, high_52w, pre_p, post_p
-    except Exception:
-        pass
-    return 115.88, 302.00, None, None
-
-current_soxl_price, high_52_week, pre_market_price, post_market_price = get_soxl_market_data()
-
-# --- Sidebar Inputs (Strategy Settings) ---
-st.sidebar.header("⚙️ Strategy Settings")
-settings = st.session_state.settings
-
-total_capital = st.sidebar.number_input(
-    "전체자금 (Total Capital $)", 
-    value=float(settings.get("total_capital", 65000.0)), 
-    step=1000.0
-)
-
-st.sidebar.divider()
-st.sidebar.subheader("💰 Capital Allocation (운용자금 설정)")
-use_custom_active = st.sidebar.checkbox("운용자금 직접 입력 (Custom Active Capital)", value=settings.get("use_custom_active", False))
-
-if use_custom_active:
-    active_capital = st.sidebar.number_input(
-        "운용자금 (Active Capital $)",
-        value=float(settings.get("custom_active_capital", total_capital * 0.8)),
-        step=500.0
-    )
-    if active_capital > total_capital:
-        st.sidebar.error("⚠️ 운용자금은 전체자금을 초과할 수 없습니다.")
-        active_capital = total_capital
-    reserve_capital = total_capital - active_capital
-    active_ratio_val = (active_capital / total_capital) * 100 if total_capital > 0 else 80.0
-else:
-    active_ratio_input = st.sidebar.slider(
-        "운용자금 비율 (%)", 
-        min_value=10.0, max_value=100.0, 
-        value=float(settings.get("active_ratio", 80.0)), 
-        step=5.0
-    )
-    active_capital = total_capital * (active_ratio_input / 100.0)
-    reserve_capital = total_capital - active_capital
-    active_ratio_val = active_ratio_input
-
-divisions = 40
-unit_capital = active_capital / divisions
-
-st.sidebar.info(f"**전체자금 (Total):** ${total_capital:,.2f}\n\n"
-                f"**운용자금 (Active):** ${active_capital:,.2f} ({active_ratio_val:.1f}%)\n\n"
-                f"**여유자금 / 진돗개 (Reserve):** ${reserve_capital:,.2f}\n\n"
-                f"**1 Tier Unit Capital:** ${unit_capital:,.2f}")
-
-st.sidebar.divider()
-st.sidebar.subheader("🎯 Tier 1 Settings (Manual)")
-
-manual_tier_1_val = st.sidebar.number_input(
-    "Manual Tier 1 Price ($)", 
-    value=float(settings.get("manual_tier_1", 302.0)), 
-    step=0.5
-)
-tier_1_price = manual_tier_1_val if manual_tier_1_val > 0 else 302.0
-
-reference_peak = tier_1_price
-tier_0_price = tier_1_price * 1.05
-
-st.sidebar.info(f"**0 Tier (Tier 1 + 5%):** ${tier_0_price:,.2f}")
-
-# Column Width Customizer Panel
-st.sidebar.divider()
-st.sidebar.subheader("📐 Table Column Widths (px)")
-default_widths = settings.get("col_widths", {
-    "Tier": 40, "매수": 80, "수량": 40, "매도": 80, 
-    "매수기준": 60, "매도기준": 60, "시드비율": 60, 
-    "배정시드": 80, "1Tier대비": 80, "매수 (입력)": 40, 
-    "실수량": 0, "예상": 40, "실매수": 40
-})
-
-col_widths = {}
-with st.sidebar.expander("Customize Column Widths", expanded=False):
-    for col_name, default_w in default_widths.items():
-        col_widths[col_name] = st.number_input(f"{col_name} Width", min_value=40, max_value=300, value=int(default_w), step=10)
-
-updated_settings = {
-    "total_capital": total_capital,
-    "use_custom_active": use_custom_active,
-    "custom_active_capital": active_capital if use_custom_active else float(settings.get("custom_active_capital", 52000.0)),
-    "active_ratio": active_ratio_val if not use_custom_active else float(settings.get("active_ratio", 80.0)),
-    "manual_tier_1": manual_tier_1_val,
-    "col_widths": col_widths
+    ],
+    "active_portfolio_id": 1
 }
-if updated_settings != settings:
-    st.session_state.settings = updated_settings
-    save_settings(updated_settings)
 
-# --- Data Calculations ---
-df_trades = pd.DataFrame(st.session_state.trades)
-if not df_trades.empty:
-    if "Type" not in df_trades.columns:
-        df_trades["Type"] = "BUY"
+def load_data():
+    d = github_load_file(DATA_FILE, None)
+    if d is None:
+        return json.loads(json.dumps(DEFAULT_DATA))
+    # 이전 단일 포트폴리오 데이터 마이그레이션 처리
+    if "portfolios" not in d:
+        old_cfg = d.get("config")
+        old_hist = d.get("price_history", [])
+        old_rounds = d.get("rounds", [])
+        d = {
+            "portfolios": [
+                {
+                    "id": 1,
+                    "name": "기본 포트폴리오",
+                    "config": old_cfg,
+                    "price_history": old_hist,
+                    "rounds": old_rounds
+                }
+            ],
+            "active_portfolio_id": 1
+        }
+    return d
 
-    buy_mask = df_trades["Type"].str.upper() == "BUY"
-    sell_mask = df_trades["Type"].str.upper() == "SELL"
+def save_data(data):
+    ok, msg = github_save_file(DATA_FILE, data)
+    if not ok:
+        st.sidebar.warning(f"⚠️ 저장 실패: {msg}")
+    return ok
 
-    total_spent = float(df_trades.loc[buy_mask, "Amount"].abs().sum() - df_trades.loc[sell_mask, "Amount"].abs().sum())
-    total_shares = float(df_trades.loc[buy_mask, "Qty"].abs().sum() - df_trades.loc[sell_mask, "Qty"].abs().sum())
+# =============================================================================
+# 핵심 계산 로직 (추추무매 오버레이)
+# =============================================================================
+def star_percent(symbol, splits, T):
+    if symbol == "TQQQ":
+        return (15 - 1.5 * T) if splits == 20 else (15 - 0.75 * T)
+    return (20 - 2 * T) if splits == 20 else (20 - T)
 
-    total_spent = max(0.0, total_spent)
-    total_shares = max(0.0, total_shares)
+def sell_profit_pct(symbol):
+    return 15 if symbol == "TQQQ" else 20
 
-    avg_price = total_spent / total_shares if total_shares > 0 else 0.0
-    tp_10_price = avg_price * 1.10 if total_shares > 0 else 0.0
+def ma20(history):
+    if len(history) < 20:
+        return None
+    last20 = history[-20:]
+    return sum(p["close"] for p in last20) / 20
 
-    one_t_capital = active_capital / 40.0 if active_capital > 0 else 0.0
-    current_tier = round(total_spent / one_t_capital, 2) if one_t_capital > 0 else 0.0
-else:
-    total_spent = 0.0
-    total_shares = 0.0
-    avg_price = 0.0
-    tp_10_price = 0.0
-    current_tier = 0.0
+def determine_multiplier(close, ma20val):
+    if ma20val is None or close is None:
+        return 1.0, "MA20 데이터 부족 (기본 1.0T)"
+    if close >= ma20val:
+        return 1.0, "MA20 상단"
+    drawdown = (ma20val - close) / ma20val * 100
+    tiers = [(55, 3.0), (50, 3.5), (45, 3.5), (40, 2.5), (35, 2.0)]
+    for th, mult in tiers:
+        if drawdown >= th:
+            return mult, f"MA20 대비 -{th}% 이상 구간"
+    return 0.73, "MA20 하단 (35% 미만 이격)"
 
-# --- Pre-calculate Tiers ---
-temp_tiers = [(0, tier_0_price)]
-prev_buy = tier_1_price
-for t in range(1, 41):
-    buy_p = tier_1_price if t == 1 else prev_buy * 0.95
-    prev_buy = buy_p
-    temp_tiers.append((t, buy_p))
+def crash_tier_table(ma20val, base1x):
+    """MA20 대비 추가 하락률(35/40/45/50/55%)별 폭락장 매수 단가·수량표"""
+    tiers = [(35, 2.0), (40, 2.5), (45, 3.5), (50, 3.5), (55, 3.0)]
+    rows = []
+    if ma20val is None or base1x is None:
+        return rows
+    for th, mult in tiers:
+        price = ma20val * (1 - th / 100)
+        amount = base1x * mult
+        qty = (amount / price) if price and price > 0 else None
+        rows.append({"tier": th, "mult": mult, "price": price, "amount": amount, "qty": qty})
+    return rows
 
-tiers_1_40 = temp_tiers[1:]
+def phase_of(T, splits):
+    if T >= splits - 1:
+        return "소진모드"
+    if T < splits / 2:
+        return "전반전"
+    return "후반전"
 
-drop_from_peak_pct = ((current_soxl_price - tier_1_price) / tier_1_price) * 100
-invested_pct_of_active = (total_spent / active_capital) * 100 if active_capital > 0 else 0.0
+def active_round(p):
+    rounds = p["rounds"]
+    if not rounds:
+        return None
+    return rounds[-1] if rounds[-1]["status"] == "active" else None
 
-# --- Top Summary Dashboard ---
-col1, col2, col3, col4, col5 = st.columns(5)
 
-ext_text = f"{drop_from_peak_pct:.1f}% from T1"
-if pre_market_price:
-    ext_text += f" | Pre:${pre_market_price:,.2f}"
-elif post_market_price:
-    ext_text += f" | Post:${post_market_price:,.2f}"
+# =============================================================================
+# Yahoo Finance 자동 시세
+# =============================================================================
 
-col1.metric("SOXL Live Price", f"${current_soxl_price:,.2f}", ext_text)
-col2.metric("Tier 1 Base Price", f"${tier_1_price:,.2f}", "Manual Tier 1")
-col3.metric("Invested Capital", f"${total_spent:,.2f}", f"{invested_pct_of_active:.1f}% Active")
-col4.metric("Average Purchase Price", f"${avg_price:,.2f}")
-col5.metric("Position & Tier", f"{total_shares:,.0f} shares", f"Tier {current_tier:.1f} / 40")
+NY_TZ = ZoneInfo("America/New_York")
 
-st.divider()
 
-# --- Target Tier Calculations ---
-target_tier_idx = 1
-for t, buy_p in tiers_1_40:
-    if current_soxl_price <= buy_p:
-        target_tier_idx = t
-    else:
-        break
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_yahoo_market(symbol):
+    """
+    Yahoo Finance에서 자동으로:
+      - 장중: 1분봉 최신 정규장 가격
+      - 장외: 최근 정규장 종가
+      - MA20: 최근 20개 완료된 일봉 종가 평균
+    을 가져옵니다.
 
-tier_filled_shares = {t: 0 for t in range(1, 41)}
-tier_trade_dates = {t: [] for t in range(1, 41)}
+    MA20은 장중에는 오늘의 미완성 일봉을 제외하고 계산합니다.
+    """
+    ticker = yf.Ticker(symbol)
 
-if not df_trades.empty:
-    for _, trade in df_trades.iterrows():
-        t_price = trade["Price"]
-        t_qty = trade["Qty"]
-        t_date = str(trade.get("Date", ""))
-        matched_tier = 1
-        for t, buy_p in tiers_1_40:
-            if buy_p >= t_price:
-                matched_tier = t
-            else:
-                break
-        tier_filled_shares[matched_tier] += int(t_qty)
-        if t_date and t_date not in tier_trade_dates[matched_tier]:
-            tier_trade_dates[matched_tier].append(t_date)
-
-target_tier_price = dict(tiers_1_40)[target_tier_idx]
-standard_tier_qty = int(unit_capital // target_tier_price) if target_tier_price > 0 else 0
-half_tier_buy_qty = max(1, int(standard_tier_qty / 2))
-current_filled_qty = int(tier_filled_shares.get(target_tier_idx, 0))
-remaining_qty = standard_tier_qty - current_filled_qty
-
-if current_filled_qty >= standard_tier_qty:
-    recommended_buy_qty = 0
-elif current_filled_qty > 0:
-    recommended_buy_qty = min(remaining_qty, half_tier_buy_qty)
-else:
-    recommended_buy_qty = half_tier_buy_qty
-
-today_str = str(date.today())
-today_trades_df = pd.DataFrame()
-today_shares_sum = 0
-if not df_trades.empty and "Date" in df_trades.columns:
-    today_trades_df = df_trades[df_trades["Date"].astype(str).str.startswith(today_str)]
-    if not today_trades_df.empty:
-        today_shares_sum = int(today_trades_df["Qty"].sum())
-
-already_bought_today = not today_trades_df.empty
-
-# --- Dynamic Daily Order Text Generator ---
-half_tier_qty = int((unit_capital * 0.5) // current_soxl_price) if current_soxl_price > 0 else 0
-avg_buy_active = (avg_price > 0) and (current_soxl_price < avg_price)
-tier_buy_active = (recommended_buy_qty > 0) and not already_bought_today
-
-action_summary_parts = []
-if already_bought_today:
-    action_summary_parts.append(f"✅ 오늘 매수 완료 ({today_str}: {today_shares_sum}주)")
-else:
-    if tier_buy_active:
-        action_summary_parts.append(f"📍 Tier {target_tier_idx} 매수 추천 (0.5티어 / {recommended_buy_qty}주 @ ${target_tier_price:,.2f})")
-    else:
-        action_summary_parts.append(f"📍 Tier {target_tier_idx} 이미 충족됨 (추가 매수 불필요)")
-    
-    if avg_buy_active:
-        action_summary_parts.append(f"📊 평단매수 추천 (0.5티어 / {half_tier_qty}주 @ ${current_soxl_price:,.2f})")
-
-action_summary_str = " | ".join(action_summary_parts)
-
-# --- Top Section: Buy & Sell Guides ---
-st.subheader("🛒 Today's Buy & Sell Guides")
-st.info(f"**🎯 오늘의 핵심 요약 (Action Summary):** {action_summary_str}")
-
-ticker_to_check = 'SOXL'
-price, ma5, gap = get_5ma_gap(ticker_to_check)
-
-if gap is not None:
-    st.info(f"📈 {ticker_to_check} 5일선 이격률: {gap:.2f}% (현재가: ${price:.2f} / 5일선: ${ma5:.2f})")
-
-c_avg_buy, c_tier_buy, c_crash_buy, c_sell = st.columns(4)
-
-with c_avg_buy:
-    st.markdown("### 📊 평단매수 가이드")
-    if avg_price > 0:
-        if current_soxl_price < avg_price:
-            est_cost_avg = half_tier_qty * current_soxl_price
-            st.success(
-                f"평단매수 추천\n\n"
-                f"현재가 ${current_soxl_price:,.2f} < 평단 ${avg_price:,.2f}\n\n"
-                f"* 추천 수량: 0.5 티어 ({half_tier_qty}주)\n"
-                f"* 예상 필요자금: ${est_cost_avg:,.2f}"
-            )
-        else:
-            st.info(f"평단매수 비추천\n\n현재가 ${current_soxl_price:,.2f} >= 평단 ${avg_price:,.2f}")
-    else:
-        st.info("보유 포지션 없음")
-    
-    if already_bought_today:
-        st.warning(f"오늘 매수 완료\n\n{today_str} : {today_shares_sum}주 매수완료")
-
-with c_tier_buy:
-    st.markdown(f"### 📍 티어매수 가이드 (Tier {target_tier_idx})")
-
-    target_dates = tier_trade_dates.get(target_tier_idx, [])
-    dates_str = ", ".join(target_dates) if target_dates else "-"
-
-    tier_mult = 0.5
-    condition_text = ""
-    if gap is not None:
-        if gap >= 0:
-            tier_mult, condition_text = 0.5, "5일선 위"
-        elif -3.0 <= gap < 0:
-            tier_mult, condition_text = 0.75, "0% ~ -3%"
-        elif -6.0 <= gap < -3.0:
-            tier_mult, condition_text = 1.0, "-3% ~ -6%"
-        elif -10.0 <= gap < -6.0:
-            tier_mult, condition_text = 1.5, "-6% ~ -10%"
-        else:
-            tier_mult, condition_text = 2.0, "-10% 이하"
-
-    target_tier_qty = int(standard_tier_qty * tier_mult)
-    recommended_buy_qty = max(0, target_tier_qty - current_filled_qty)
-    est_cost_tier = recommended_buy_qty * target_tier_price
-
-    if current_filled_qty >= target_tier_qty:
-        st.warning(f"티어매수 완료 ({current_filled_qty}/{target_tier_qty}주 보유)")
-    elif current_filled_qty > 0:
-        st.success(
-            f"티어매수 추가 추천 ({tier_mult}티어)\n"
-            f"tier {target_tier_idx} ({dates_str}) {current_filled_qty} / {target_tier_qty} 보유\n"
-            f"* 잔여 수량 중 {recommended_buy_qty}주 매수 필요"
-        )
-    else:
-        st.success(
-            f"티어매수 추천 ({tier_mult}티어)\n"
-            f"tier {target_tier_idx} 0 / {target_tier_qty} 보유\n"
-            f"* 추천 수량: {recommended_buy_qty}주"
-        )
-
-    st.info(
-        f"* 5일선 이격률: {gap:.2f}% ({condition_text})\n" if gap is not None else ""
-        f"* 목표 가격: ${target_tier_price:,.2f}\n"
-        f"* 추천 수량: {recommended_buy_qty}주 ({tier_mult}티어)\n"
-        f"* 예상 필요자금: ${est_cost_tier:,.2f}"
+    daily = ticker.history(
+        period="3mo",
+        interval="1d",
+        auto_adjust=False,
+        actions=False,
+        prepost=False,
     )
 
-with c_crash_buy:
-    st.markdown("### 🚨 5일선 매매 가이드")
+    if daily is None or daily.empty:
+        raise RuntimeError(f"{symbol} Yahoo 일봉 데이터를 가져오지 못했습니다.")
 
-    if gap is not None:
-        st.info(
-            f"📊 **MA5 주가 가이드**\n\n"
-            f"* **현재 5일선 이격률:** `{gap:.2f}%` ➔ **적용: {condition_text}**\n"
-            f"* **오늘 추천 배율:** `{tier_mult}T`"
-        )
+    daily = daily.dropna(subset=["Close"]).copy()
 
-    curr_p = current_soxl_price
-    daily_capital = unit_capital
+    now_et = datetime.now(NY_TZ)
+    current_date = now_et.date()
 
-    if curr_p > 0 and daily_capital > 0:
-        base_qty = int(daily_capital // curr_p)
+    # 오늘이 정규장 진행 중인지 판단
+    weekday = now_et.weekday() < 5
+    regular_session_open = time(9, 30)
+    regular_session_close = time(16, 0)
+    market_open = (
+        weekday
+        and regular_session_open <= now_et.time().replace(second=0, microsecond=0) < regular_session_close
+    )
 
-        q_05 = int(base_qty * 0.5)
-        q_075 = int(base_qty * 0.75)
-        q_10 = int(base_qty * 1.0)
-        q_15 = int(base_qty * 1.5)
-        q_20 = int(base_qty * 2.0)
-
-        container_html = (
-            f"<div style='background-color: #f8d7da; padding: 15px; border-radius: 8px; "
-            f"font-size: 13px; color: #333; font-family: sans-serif;'>"
-            f"<b>📍 (${daily_capital:,.2f}) / 현재가 (${curr_p:,.2f}) </b><br><br>"
-            f"• <b>5일선 위 (0.5T):</b> {q_05}주<br>"
-            f"• <b>0% ~ -3% (0.75T):</b> {q_075}주<br>"
-            f"• <b>-3% ~ -6% (1.0T):</b> {q_10}주<br>"
-            f"• <b>-6% ~ -10% (1.5T):</b> {q_15}주<br>"
-            f"• <b>-10% 이하 (2.0T):</b> {q_20}주"
-            f"</div>"
-        )
-        st.markdown(container_html, unsafe_allow_html=True)
-
-star_percent = 20.0 - (1.0 * current_tier)
-star_price = avg_price * (1.0 + (star_percent / 100.0))
-
-with c_sell:
-    st.markdown("### 🎯 매도 가이드")
-    if avg_price > 0 and total_shares > 0:
-        quarter_qty = max(1, int(total_shares / 4.0))
-        p_20 = avg_price * 1.20
-        qty_all = int(total_shares)
-        
-        st.success(f"""
-         ⭐ **별값**
-
-         **T값:** {current_tier:.2f} | **별가:** {star_percent:.2f}%
-
-         * **매도 ★:** ${star_price:,.2f}
-         * **10% :** ${tp_10_price:,.2f}
-         * **1/4 쿼터:** {quarter_qty}주
-         * **체결 시:** T값 → T * 0.75
-         """)
-        
-        st.info(
-            f"🎯 **20% 익절**\n\n"
-            f"* 지정가: **${p_20:,.2f}**\n"
-            f"* 전량 **{qty_all}주** (사이클 종료)"
-        )
+    # 일봉 MA20:
+    # 장중에는 오늘 미완성 일봉 제외,
+    # 장 마감 후에는 오늘 종가 포함.
+    daily_dates = pd.to_datetime(daily.index)
+    if getattr(daily_dates, "tz", None) is not None:
+        daily_dates_et = daily_dates.tz_convert(NY_TZ)
     else:
-        st.info("보유 포지션 없음")
+        daily_dates_et = daily_dates.tz_localize(NY_TZ)
 
-st.divider()
+    daily = daily.copy()
+    daily["_date_et"] = daily_dates_et.date
 
-# --- Lower Section: Master Grid Table ---
-st.subheader("📊 Master Grid & Target Price Table (Live Price Highlighted)")
+    if market_open:
+        completed = daily[daily["_date_et"] < current_date].copy()
+    else:
+        completed = daily[daily["_date_et"] <= current_date].copy()
 
-tier_data = []
-cum_shares = 0
-cum_actual_shares = 0
+    if len(completed) < 20:
+        ma20_val = None
+    else:
+        ma20_val = float(completed["Close"].tail(20).mean())
 
-t0_num, t0_price = temp_tiers[0]
-tier_data.append({
-    "Tier": "0 (T1+5%)",
-    "매수": round(t0_price, 2),
-    "수량": "-",
-    "매도": round(t0_price * 1.10, 2),
-    "매수기준": "T1기준+5%",
-    "매도기준": "10.00%",
-    "시드비율": "-",
-    "배정시드": "-",
-    "1Tier대비": "+5.00%",
-    "매수 (입력)": "-",
-    "실매수": "-",
-    "예상": "-",
-    "티어값": 0.0
-})
+    # 실시간/최근 종가
+    live_price = None
+    live_timestamp = None
+    source_label = "Yahoo 최근 종가"
 
-# --- tier_filled_shares를 계산하는 기존 구간을 이 코드로 교체하세요 ---
-tier_filled_shares = {t: 0 for t in range(1, 41)}
-tier_trade_dates = {t: [] for t in range(1, 41)}
+    if market_open:
+        try:
+            intraday = ticker.history(
+                period="1d",
+                interval="1m",
+                auto_adjust=False,
+                actions=False,
+                prepost=False,
+            )
 
-if not df_trades.empty:
-    for _, trade in df_trades.iterrows():
-        t_price = float(trade["Price"])
-        t_qty = float(trade["Qty"])
-        t_type = str(trade.get("Type", "BUY")).upper()
-        t_date = str(trade.get("Date", ""))
-        
-        # Find the best matching tier where t_price is closest to or falls within the tier buy price
-        matched_tier = 1
-        min_diff = float('inf')
-        
-        for t, buy_p in tiers_1_40:
-            diff = abs(buy_p - t_price)
-            if diff < min_diff:
-                min_diff = diff
-                matched_tier = t
+            if intraday is not None and not intraday.empty:
+                intraday = intraday.dropna(subset=["Close"])
+                if not intraday.empty:
+                    last = intraday.iloc[-1]
+                    live_price = float(last["Close"])
+                    live_timestamp = intraday.index[-1]
+                    source_label = "Yahoo 장중 1분 시세"
+        except Exception:
+            live_price = None
 
-        # Add for BUY, subtract for SELL
-        if t_type == "SELL":
-            tier_filled_shares[matched_tier] -= int(t_qty)
-        else:
-            tier_filled_shares[matched_tier] += int(t_qty)
-            
-        if t_date and t_date not in tier_trade_dates[matched_tier]:
-            tier_trade_dates[matched_tier].append(t_date)
+    if live_price is None:
+        if len(completed) == 0:
+            raise RuntimeError(f"{symbol} 최근 종가를 확인하지 못했습니다.")
+        live_price = float(completed.iloc[-1]["Close"])
+        live_timestamp = completed.index[-1]
 
-    # Prevent negative values per tier
-    for t in tier_filled_shares:
-        tier_filled_shares[t] = max(0, tier_filled_shares[t])
+    gap_pct = (
+        ((live_price - ma20_val) / ma20_val * 100)
+        if ma20_val is not None and ma20_val > 0
+        else None
+    )
 
-for t, buy_p in tiers_1_40:
-    drop_pct = ((buy_p - tier_1_price) / tier_1_price) * 100
-    take_profit_p = buy_p * 1.10
-    suggested_shares = int(unit_capital // buy_p) if buy_p > 0 else 0
-    cum_shares += suggested_shares
-    
-    input_bought_qty = tier_filled_shares.get(t, 0)
-    cum_actual_shares += input_bought_qty
+    # 표시용 최근 60개 일봉
+    hist = completed.tail(60).copy()
+    history_rows = []
+    for idx, row in hist.iterrows():
+        dt = row["_date_et"]
+        history_rows.append(
+            {
+                "date": str(dt),
+                "close": float(row["Close"]),
+            }
+        )
 
-    input_tier_val = round(input_bought_qty / suggested_shares, 2) if suggested_shares > 0 else 0.0
+    previous_close = (
+        float(completed.iloc[-2]["Close"])
+        if len(completed) >= 2
+        else None
+    )
 
-    tier_data.append({
-        "Tier": str(t),
-        "매수": round(buy_p, 2),
-        "수량": suggested_shares,
-        "매도": round(take_profit_p, 2),
-        "매수기준": "-5.00%" if t > 1 else "기준(T1)",
-        "매도기준": "10.00%",
-        "시드비율": f"{(1/40)*100:.2f}%",
-        "배정시드": round(unit_capital, 2),
-        "1Tier대비": f"{drop_pct:.2f}%",
-        "매수 (입력)": input_bought_qty,
-        "실매수": cum_actual_shares,
-        "예상": cum_shares,
-        "티어값": input_tier_val
+    return {
+        "symbol": symbol,
+        "price": live_price,
+        "ma20": ma20_val,
+        "gap_pct": gap_pct,
+        "previous_close": previous_close,
+        "timestamp": str(live_timestamp),
+        "fetched_at": now_et.isoformat(),
+        "source_label": source_label,
+        "market_open": market_open,
+        "history": history_rows,
+    }
+
+
+
+def start_new_round(p, start_capital, start_date):
+    r = {
+        "id": len(p["rounds"]) + 1,
+        "startDate": start_date,
+        "startCapital": start_capital,
+        "cash": start_capital,
+        "qty": 0.0,
+        "avgCost": 0.0,
+        "T": 0.0,
+        "trades": [],
+        "status": "active",
+    }
+    p["rounds"].append(r)
+    return r
+
+def apply_buy(r, dt, price, qty, t_delta):
+    amount = price * qty
+    new_qty = r["qty"] + qty
+    new_cost = r["avgCost"] * r["qty"] + amount
+    r["cash"] -= amount
+    r["avgCost"] = (new_cost / new_qty) if new_qty > 0 else 0.0
+    r["qty"] = new_qty
+    r["T"] += t_delta
+    r["trades"].append({
+        "id": len(r["trades"]) + 1,
+        "date": dt, "type": "buy", "price": price, "qty": qty, "amount": amount,
+        "tDelta": t_delta, "tAfter": r["T"], "avgAfter": r["avgCost"],
+        "cashAfter": r["cash"], "pnl": None,
     })
 
-df_tiers = pd.DataFrame(tier_data)
-current_tier = sum(float(row.get("티어값", 0)) for row in tier_data)
+def apply_quarter_sell(r, dt, price, qty):
+    amount = price * qty
+    pnl = (price - r["avgCost"]) * qty
+    t_before = r["T"]
+    r["cash"] += amount
+    r["qty"] -= qty
+    r["T"] = r["T"] * 0.75
+    r["trades"].append({
+        "id": len(r["trades"]) + 1,
+        "date": dt, "type": "quarter_sell", "price": price, "qty": qty, "amount": amount,
+        "tDelta": r["T"] - t_before, "tAfter": r["T"], "avgAfter": r["avgCost"],
+        "cashAfter": r["cash"], "pnl": pnl,
+    })
 
-def highlight_current_price_tier(row):
-    t_val = row["Tier"]
-    if t_val == "0 (T1+5%)":
-        return ['background-color: #fff3cd; color: #856404; font-weight: bold'] * len(row)
+def apply_final_sell(p, r, dt, price, qty):
+    amount = price * qty
+    pnl = (price - r["avgCost"]) * qty
+    r["cash"] += amount
+    r["qty"] -= qty
+    r["trades"].append({
+        "id": len(r["trades"]) + 1,
+        "date": dt, "type": "final_sell", "price": price, "qty": qty, "amount": amount,
+        "tDelta": 0, "tAfter": r["T"], "avgAfter": r["avgCost"],
+        "cashAfter": r["cash"], "pnl": pnl,
+    })
+    realized = sum(t["pnl"] for t in r["trades"] if t["pnl"] is not None)
+    r["status"] = "closed"
+    r["closedDate"] = dt
+    r["realizedPnl"] = realized
+    next_capital = r["cash"] if p["config"]["compounding"] else p["config"]["capital"]
+    start_new_round(p, next_capital, dt)
+
+def recalculate_round(r, initial_capital):
+    """거래 삭제 시 라운드 상태 전체 재계산"""
+    r["cash"] = initial_capital
+    r["qty"] = 0.0
+    r["avgCost"] = 0.0
+    r["T"] = 0.0
+    trades = r["trades"].copy()
+    r["trades"] = []
     
-    try:
-        buy_price = float(row["매수"])
-    except Exception:
-        return [''] * len(row)
+    for t in trades:
+        ttype = t["type"]
+        dt = t["date"]
+        price = t["price"]
+        qty = t["qty"]
+        t_delta = t.get("tDelta", 0.0)
         
-    # 현재가와 티어 매수가를 직접 비교하여 현재 구간에 맞는 곳을 하이라이트
-    # (테이블 정렬 방향에 맞춰 부등호를 조절할 수 있습니다)
-    if current_soxl_price >= buy_price:
-        return ['background-color: #cce5ff; color: #004085; font-weight: bold'] * len(row)
-    else:
-        return ['background-color: #f8d7da; color: #721c24'] * len(row)
-    
-styled_df = df_tiers.style.apply(highlight_current_price_tier, axis=1).format({
-    "매수": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x,
-    "매도": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x,
-    "배정시드": lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x,
-    "티어값": lambda x: f"{x:.2f}" if isinstance(x, (int, float)) else x
-})
+        if ttype == "buy":
+            apply_buy(r, dt, price, qty, t_delta)
+        elif ttype == "quarter_sell":
+            apply_quarter_sell(r, dt, price, qty)
+        elif ttype == "final_sell":
+            amount = price * qty
+            pnl = (price - r["avgCost"]) * qty
+            r["cash"] += amount
+            r["qty"] -= qty
+            r["trades"].append({
+                "id": len(r["trades"]) + 1,
+                "date": dt, "type": "final_sell", "price": price, "qty": qty, "amount": amount,
+                "tDelta": 0, "tAfter": r["T"], "avgAfter": r["avgCost"],
+                "cashAfter": r["cash"], "pnl": pnl,
+            })
+            r["realizedPnl"] = sum(tr["pnl"] for tr in r["trades"] if tr["pnl"] is not None)
 
-column_configs = {
-    "매수 (입력)": st.column_config.NumberColumn("매수 (입력)", format="%d", min_value=0, step=1, width=col_widths.get("매수 (입력)", 100))
+def compute_guide(p, market=None):
+    r = active_round(p)
+    if r is None or p["config"] is None:
+        return None
+
+    cfg = p["config"]
+    splits, symbol = cfg["splits"], cfg["symbol"]
+
+    # Yahoo Finance 자동 시세
+    if market is None:
+        market = fetch_yahoo_market(symbol)
+
+    close = market.get("price")
+    ma = market.get("ma20")
+    gap_pct = market.get("gap_pct")
+    mult, tier = determine_multiplier(close, ma)
+
+    T = r["T"]
+    phase = phase_of(T, splits)
+
+    star_pct = star_percent(symbol, splits, T)
+    star_point = (
+        r["avgCost"] * (1 + star_pct / 100)
+        if r["avgCost"] > 0 else None
+    )
+    buy_trigger = (
+        star_point - 0.01
+        if star_point is not None else None
+    )
+
+    divisor_remaining = splits - T
+    # 1회 매수액
+    base1x = (
+        cfg["capital"] / splits
+        if splits > 0 else None
+    )
+
+# 오늘 적용 배수를 적용한 매수 목표금액
+    target_amount = (
+        base1x * mult
+        if base1x is not None else None
+    )
+
+# 매수 누적액
+    cumulative_buy_amount = (
+        r["avgCost"] * r["qty"]
+        if r["qty"] > 0 else 0.0
+    )
+
+# 현재 T
+    current_T = (
+        cumulative_buy_amount / base1x
+        if base1x is not None and base1x > 0
+        else 0.0
+    )
+
+# 오늘 매수 수량
+    buy_qty = (
+        target_amount / close
+        if target_amount is not None
+        and close is not None
+        and close > 0
+        else None
+    )
+    
+
+    s_pct = sell_profit_pct(symbol)
+    sell_target = (
+        r["avgCost"] * (1 + s_pct / 100)
+        if r["avgCost"] > 0 else None
+    )
+
+    quarter_qty = r["qty"] / 4
+    remainder_qty = r["qty"] - quarter_qty
+    is_first_buy = (r["qty"] == 0 and r["T"] == 0)
+
+    return dict(
+        round=r,
+        close=close,
+        ma=ma,
+        gap_pct=gap_pct,
+        mult=mult,
+        tier=tier,
+        phase=phase,
+        star_pct=star_pct,
+        star_point=star_point,
+        buy_trigger=buy_trigger,
+        base1x=base1x,
+        target_amount=target_amount,
+
+        # 현재 T 및 매수수량
+        cumulative_buy_amount=cumulative_buy_amount,
+        current_T=current_T,
+        buy_qty=buy_qty,
+        one_time_buy_amount=base1x,
+
+        sell_target=sell_target,
+        s_pct=s_pct,
+        quarter_qty=quarter_qty,
+        remainder_qty=remainder_qty,
+        is_first_buy=is_first_buy,
+        divisor_remaining=divisor_remaining,
+        market=market,
+    )
+
+# =============================================================================
+# 포맷 헬퍼
+# =============================================================================
+def money(n):
+    return "—" if n is None else f"${n:,.2f}"
+ 
+def pct(n):
+    if n is None:
+        return "—"
+    sign = "+" if n >= 0 else ""
+    return f"{sign}{n:.2f}%"
+ 
+def qty_fmt(n):
+    return "—" if n is None else f"{n:,.4f}"
+ 
+def shares_fmt(n):
+    """매매 가이드/보유수량처럼 사람이 읽는 주식 수량은 소수점 없이 정수(반올림)로 표시"""
+    return "—" if n is None else f"{round(n):,}주"
+
+# =============================================================================
+# 스타일 (라이트/다크 테마 반응형 CSS 변수 사용)
+# =============================================================================
+CSS = """
+<style>
+:root {
+  --bg: #F8F9FA;
+  --surface: #FFFFFF;
+  --surface2: #F1F3F5;
+  --border: #E9ECEF;
+  --text: #212529;
+  --text-dim: #6C757D;
+  --text-faint: #ADB5BD;
+  --buy: #0CA678;
+  --profit: #F59F00;
+  --loss: #F03E3E;
+  --accent: #4C6EF5;
+  --card-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
-for col in ["Tier", "매수", "수량", "매도", "매수기준", "매도기준", "시드비율", "배정시드", "1Tier대비", "실수량", "예상", "실매수"]:
-    if col != "매수 (입력)":
-        column_configs[col] = st.column_config.Column(width=col_widths.get(col, 90))
 
-st.dataframe(
-    styled_df,
-    use_container_width=True,
-    hide_index=True,
-    column_config=column_configs
-)
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0F1219;
+    --surface: #171B24;
+    --surface2: #1D2330;
+    --border: #2A3140;
+    --text: #E8EAEE;
+    --text-dim: #8B93A6;
+    --text-faint: #545C6E;
+    --buy: #4FD1C5;
+    --profit: #E8B44C;
+    --loss: #E5636B;
+    --accent: #7C9CFF;
+    --card-shadow: none;
+  }
+}
 
-st.divider()
+.stApp { background: var(--bg); }
+.block-container { max-width: 920px; padding-top: 1.2rem; }
+h1,h2,h3,h4,p,span,div,label { font-family: -apple-system, "Malgun Gothic", sans-serif; }
 
-# --- Trade Input Section ---
-st.subheader("📝 Record Executed Trade")
+.round-badge {
+  display: inline-block; font-family: ui-monospace, monospace; font-size: 13px; color: var(--accent);
+  background: rgba(124,156,255,0.13); border: 1px solid rgba(124,156,255,0.3);
+  padding: 4px 12px; border-radius: 20px; margin-bottom: 12px; font-weight: 600;
+}
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 18px 20px; margin-bottom: 16px; box-shadow: var(--card-shadow);
+}
+.card-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 12px; }
+.tag { font-family: ui-monospace, monospace; font-size: 11px; padding: 3px 8px; border-radius: 20px; margin-left: 6px; }
+.tag.buy { background: rgba(12,166,120,0.15); color: var(--buy); }
+.tag.profit { background: rgba(245,159,0,0.15); color: var(--profit); }
+.tag.loss { background: rgba(240,62,62,0.15); color: var(--loss); }
+.tag.dim { background: var(--surface2); color: var(--text-dim); }
 
-with st.form("trade_form", clear_on_submit=True):
-    f_col1, f_col2, f_col3, f_col4, f_col5 = st.columns(5)
-    
-    date_input_val = f_col1.date_input("Trade Date")
-    trade_type_val = f_col2.selectbox("Trade Type", ["BUY", "SELL"])
-    price = f_col3.number_input("Execution Price ($)", min_value=0.01, value=float(round(target_tier_price, 2)))
-    qty = f_col4.number_input("Execution Quantity (Shares)", min_value=1.0, value=float(max(1.0, recommended_buy_qty)))
+.kv-label { font-size: 12px; color: var(--text-dim); font-weight: 500; }
+.kv-value { font-family: ui-monospace, monospace; font-size: 16px; color: var(--text); margin-top: 2px; margin-bottom: 10px; font-weight: 600; }
+.note { font-size: 12.5px; color: var(--text-dim); line-height: 1.6; background: var(--surface2); border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
+.note.warn { background: rgba(240,62,62,0.12); color: var(--loss); }
 
-    suggested_tier_weight = round(qty / standard_tier_qty, 2) if standard_tier_qty > 0 else 0.5
-    suggested_tier_weight = max(0.01, suggested_tier_weight)
+.tgauge-track { position: relative; height: 10px; border-radius: 5px; overflow: hidden; background: var(--surface2); display: flex; margin-top: 6px;}
+.tgauge-zone { height: 100%; }
+.tgauge-marker { position: absolute; top: -3px; width: 3px; height: 16px; background: var(--text); border-radius: 2px; }
 
-    tier_add = f_col5.number_input(
-        "Auto-Calculated T Weight",
-        min_value=0.01,
-        max_value=5.0,
-        value=float(suggested_tier_weight),
-        step=0.01,
-        help="Automatically calculated based on execution quantity vs standard tier quantity."
+/* Dashboard Card UI */
+.portfolio-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  margin-bottom: 16px;
+  box-shadow: var(--card-shadow);
+  transition: transform 0.1s ease;
+}
+.portfolio-card:hover { border-color: var(--accent); }
+.portfolio-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.portfolio-card-title { font-size: 18px; font-weight: 700; color: var(--text); }
+</style>
+"""
+
+def kv(label, value, color=None):
+    style = f"color:{color};" if color else ""
+    st.markdown(
+        f'<div class="kv-label">{label}</div><div class="kv-value" style="{style}">{value}</div>',
+        unsafe_allow_html=True,
     )
 
-    submitted = st.form_submit_button("Save Trade")
-    if submitted:
-        new_trade = {
-            "Date": str(date_input_val),
-            "Type": trade_type_val,
-            "Price": float(round(price, 2)),
-            "Qty": float(qty),
-            "Amount": float(round(price * qty, 2)),
-            "Tier": float(tier_add if trade_type_val == "BUY" else -tier_add)
-        }
+# =============================================================================
+# 앱 시작
+# =============================================================================
+st.markdown(CSS, unsafe_allow_html=True)
 
-        st.session_state.trades.append(new_trade)
-        st.session_state.trades = sorted(st.session_state.trades, key=lambda x: str(x.get("Date", "")), reverse=True)
-        save_trades(st.session_state.trades)
-        st.rerun()
+if "data" not in st.session_state:
+    st.session_state.data = load_data()
+data = st.session_state.data
 
-# --- Editable & Sortable Trade History Section ---
-st.subheader("📋 Trade History (Newest First)")
+def persist():
+    save_data(data)
 
-if st.session_state.trades:
-    sorted_trades = sorted(st.session_state.trades, key=lambda x: str(x.get("Date", "")), reverse=True)
-    df_trades = pd.DataFrame(sorted_trades)
-    df_trades["Date"] = df_trades["Date"].astype(str)
-    
-    edited_df = st.data_editor(
-        df_trades[["Date", "Type", "Price", "Qty", "Amount", "Tier"]],
-        num_rows="dynamic",
+# ---- 사이드바: 백업 / 복원 ----
+with st.sidebar:
+    st.markdown("### ⚙️ 데이터 관리")
+    st.download_button(
+        "📥 내 데이터 내보내기 (JSON)",
+        data=json.dumps(data, ensure_ascii=False, indent=2),
+        file_name=f"infbuy_backup_{date.today().isoformat()}.json",
+        mime="application/json",
         use_container_width=True,
-        key="trade_history_editor"
     )
+    uploaded = st.file_uploader("📂 백업 파일 불러오기", type=["json"])
+    if uploaded is not None:
+        if st.button("🔄 이 파일로 복원", use_container_width=True):
+            st.session_state.data = json.load(uploaded)
+            save_data(st.session_state.data)
+            st.rerun()
+    st.markdown("---")
+    st.caption("💡 데이터는 서버의 data.json 파일에 저장됩니다. 주기적으로 백업을 권장합니다.")
 
-    if edited_df is not None:
-        updated_records = edited_df.to_dict(orient="records")
-        cleaned_records = []
-        for r in updated_records:
-            if r.get("Date") and str(r.get("Date")) != "nan":
-                p_val = float(r.get("Price", 0.0))
-                q_val = float(r.get("Qty", 0.0))
-                cleaned_records.append({
-                    "Date": str(r.get("Date")),
-                    "Type": str(r.get("Type", "BUY")),
-                    "Price": p_val,
-                    "Qty": q_val,
-                    "Amount": float(round(p_val * q_val, 2)),
-                    "Tier": float(r.get("Tier", 1.0))
-                })
-        
-        cleaned_records = sorted(cleaned_records, key=lambda x: str(x.get("Date", "")), reverse=True)
-        
-        if cleaned_records != sorted_trades:
-            st.session_state.trades = cleaned_records
-            save_trades(cleaned_records)
+# 활성 포트폴리오 가져오기
+portfolios = data.get("portfolios", [])
+active_id = data.get("active_portfolio_id", None)
+
+# 상단 내비게이션 (포트폴리오 선택 및 대시보드 이동)
+if active_id is not None:
+    top_col1, top_col2 = st.columns([3, 1])
+    with top_col1:
+        st.caption("현재 관리에 집중 중인 포트폴리오:")
+    with top_col2:
+        if st.button("🏠 전체 포트폴리오 보기", use_container_width=True):
+            data["active_portfolio_id"] = None
+            persist()
             st.rerun()
 
-    if st.button("Clear All History (Cycle Reset)"):
-        st.session_state.trades = []
-        save_trades([])
-        if "trade_history_editor" in st.session_state:
-            del st.session_state["trade_history_editor"]
+# =============================================================================
+# 1. 포트폴리오 대시보드 메인 화면 (active_portfolio_id 가 None 일 때)
+# =============================================================================
+if active_id is None:
+    st.title("📊 추추매매 포트폴리오")
+    st.caption("현재 진행 중인 추추매매 포트폴리오를 관리하고 추적하세요.")
+
+    # 1. 포트폴리오 목록 카드 뷰
+    if portfolios:
+        st.markdown("### 📋 오늘의 매수/매도 가이드 요약")
+        
+        # 2열 카드로 표시
+        for idx in range(0, len(portfolios), 2):
+            cols = st.columns(2)
+            for c_idx, p in enumerate(portfolios[idx:idx+2]):
+                with cols[c_idx]:
+                    cfg = p.get("config")
+                    r = active_round(p)
+                    g = None
+                    if cfg:
+                        try:
+                            mkt = fetch_yahoo_market(cfg["symbol"])
+                            g = compute_guide(p, mkt)
+                        except Exception:
+                            g = None
+                    
+                    st.markdown('<div class="portfolio-card">', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="portfolio-card-header">'
+                        f'<div class="portfolio-card-title">{p["name"]}</div>'
+                        f'<span class="tag buy">{cfg["symbol"] if cfg else "미설정"}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                    
+                    if cfg and r:
+                        unrealized = (g["close"] - r["avgCost"]) * r["qty"] if (g and g["close"] and r["qty"] > 0) else None
+                        c_a, c_b, c_c = st.columns(3)
+                        with c_a:
+                            kv("평단가", money(r["avgCost"]) if r["avgCost"] > 0 else "—")
+                            kv("보유수량", shares_fmt(r["qty"]))
+                        with c_b:
+                            kv("잔금", money(r["cash"]))
+                            kv("미실현손익", money(unrealized), color=("var(--profit)" if (unrealized or 0) >= 0 else "var(--loss)") if unrealized is not None else None)
+                        
+                        if g and g["buy_trigger"]:
+                            st.markdown(
+                                f'<div class="note"><b>🟢 LOC 매수:</b> {money(g["buy_trigger"])} × {shares_fmt(g["buy_qty"])}주 이하<br>'
+                                f'<b>🟡 쿼터매도:</b>{money(g["star_point"])} × {shares_fmt(g["quarter_qty"])}주<br>'
+                                f'<b>🔴 매도 목표:</b> {money(g["sell_target"])} × {shares_fmt(g["remainder_qty"])}주</div>',
+                                unsafe_allow_html=True,
+                            )
+                    else:
+                        st.info("기본 설정이 필요한 포트폴리오입니다.")
+                        
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button(f"👉 {p['name']} 관리하기", key=f"select_p_{p['id']}", use_container_width=True):
+                        data["active_portfolio_id"] = p["id"]
+                        persist()
+                        st.rerun()
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+    # 2. 새로운 포트폴리오 추가 버튼 (+)
+    st.markdown("---")
+    with st.expander("➕ 새 포트폴리오 추가하기", expanded=not bool(portfolios)):
+        with st.form("add_portfolio_form"):
+            new_p_name = st.text_input("포트폴리오 이름", placeholder="예: SOXL 서브 계좌, TQQQ 연금계좌")
+            p_symbol = st.selectbox("종목", ["TQQQ", "SOXL"])
+            p_splits = st.selectbox("분할 수", [20, 40], index=1)
+            p_capital = st.number_input("운용 원금 ($)", min_value=0.0, value=20000.0, step=100.0)
+            p_compounding = st.radio("라운드 종료 후 재투입 방식", ["복리 (수익 재투입)", "단리 (원금 고정)"]) == "복리 (수익 재투입)"
+            add_p_submitted = st.form_submit_button("포트폴리오 생성하기", use_container_width=True)
+
+        if add_p_submitted:
+            if not new_p_name:
+                st.error("포트폴리오 이름을 입력해주세요.")
+            else:
+                new_id = max([p["id"] for p in portfolios], default=0) + 1
+                new_p = {
+                    "id": new_id,
+                    "name": new_p_name,
+                    "config": {
+                        "symbol": p_symbol,
+                        "splits": p_splits,
+                        "capital": p_capital,
+                        "compounding": p_compounding
+                    },
+                    "price_history": [],
+                    "rounds": []
+                }
+                start_new_round(new_p, p_capital, date.today().isoformat())
+                data["portfolios"].append(new_p)
+                data["active_portfolio_id"] = new_id
+                persist()
+                st.success(f"'{new_p_name}' 포트폴리오가 성공적으로 생성되었습니다!")
+                st.rerun()
+
+    st.stop()
+
+# =============================================================================
+# 2. 특정 포트폴리오 상세 관리 화면
+# =============================================================================
+current_p = next((p for p in data["portfolios"] if p["id"] == active_id), None)
+
+if current_p is None:
+    data["active_portfolio_id"] = None
+    persist()
+    st.rerun()
+
+# 설정 없으면 초기화
+if current_p["config"] is None:
+    st.title(f"⚙️ {current_p['name']} 초기 설정")
+    with st.form("setup_form"):
+        symbol = st.selectbox("종목", ["TQQQ", "SOXL"])
+        splits = st.selectbox("분할 수", [20, 40], index=1)
+        capital = st.number_input("운용 원금 ($)", min_value=0.0, value=20000.0, step=100.0)
+        compounding = st.radio("라운드 종료 후 재투입 방식", ["복리 (수익 재투입)", "단리 (원금 고정)"]) == "복리 (수익 재투입)"
+        submitted = st.form_submit_button("시작하기", use_container_width=True)
+    if submitted:
+        current_p["config"] = {"symbol": symbol, "splits": splits, "capital": capital, "compounding": compounding}
+        start_new_round(current_p, capital, date.today().isoformat())
+        persist()
         st.rerun()
-else:
-    st.info("No trade history recorded yet.")
+    st.stop()
+
+cfg = current_p["config"]
+r = active_round(current_p)
+
+try:
+    market = fetch_yahoo_market(cfg["symbol"])
+    market_error = None
+except Exception as exc:
+    market = {
+        "symbol": cfg["symbol"],
+        "price": None,
+        "ma20": None,
+        "gap_pct": None,
+        "previous_close": None,
+        "timestamp": None,
+        "fetched_at": None,
+        "source_label": "Yahoo 연결 실패",
+        "market_open": False,
+        "history": [],
+    }
+    market_error = str(exc)
+
+guide = compute_guide(current_p, market) if market_error is None else None
+
+# 포트폴리오 상단 콕핏
+st.title(f"📈 {current_p['name']}")
+if market_error:
+    st.error(
+        f"Yahoo Finance 시세를 불러오지 못했습니다: {market_error}"
+    )
+total_realized = sum(x.get("realizedPnl", 0) for x in current_p["rounds"] if x["status"] == "closed")
+unrealized = None
+if guide and guide["close"] is not None and r["qty"] > 0:
+    unrealized = (guide["close"] - r["avgCost"]) * r["qty"]
+
+st.markdown(
+    f'<div class="round-badge">{cfg["symbol"]} · {cfg["splits"]}분할 · Round #{r["id"]} · {phase_of(r["T"], cfg["splits"])}</div>',
+    unsafe_allow_html=True,
+)
+
+c1, c2, c3, c4, c5 = st.columns(5)
+with c1:
+    kv("평단가", money(r["avgCost"]) if r["avgCost"] > 0 else "—")
+with c2:
+    kv("보유수량", shares_fmt(r["qty"]))
+with c3:
+    kv("잔금", money(r["cash"]))
+with c4:
+    kv("미실현손익", money(unrealized), color=("var(--profit)" if (unrealized or 0) >= 0 else "var(--loss)") if unrealized is not None else None)
+with c5:
+    kv("누적 실현손익", money(total_realized), color="var(--profit)" if total_realized >= 0 else "var(--loss)")
+
+splits = cfg["splits"]
+T = r["T"]
+pos = max(0, min(100, T / splits * 100))
+z1 = (splits / 2) / splits * 100
+z2 = ((splits - 1) - splits / 2) / splits * 100
+z3 = 100 - z1 - z2
+st.markdown(
+    f"""
+    <div class="tgauge-track">
+      <div class="tgauge-zone" style="width:{z1}%; background:rgba(12,166,120,0.28);"></div>
+      <div class="tgauge-zone" style="width:{z2}%; background:rgba(245,159,0,0.28);"></div>
+      <div class="tgauge-zone" style="width:{z3}%; background:rgba(240,62,62,0.30);"></div>
+      <div class="tgauge-marker" style="left:{pos}%;"></div>
+    </div>
+    <div style="font-family: ui-monospace, monospace; font-size:11px; color:var(--text-faint); margin-top:4px;">
+      T = {T:.2f} / {splits} · 전반전 / 후반전 / 소진모드
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# 탭 메뉴
+tab_guide, tab_market, tab_trade, tab_history, tab_settings = st.tabs(
+    ["오늘의 가이드", "자동 시세", "매매기록", "히스토리", "설정"]
+)
+
+# ---------------- 오늘의 가이드 ----------------
+with tab_guide:
+    g = guide
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="card-title">시세 상태 <span class="tag {"loss" if g["mult"]>=2 else "buy" if g["mult"]<1 else "dim"}">{g["tier"]}</span></div>',
+        unsafe_allow_html=True,
+    )
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    with cc1:
+        kv("현재 Yahoo 가격", money(g["close"]) if g["close"] is not None else "가격 확인 실패")
+    with cc2:
+        kv("MA20", money(g["ma"]) if g["ma"] is not None else f"데이터 {len(current_p['price_history'])}/20")
+    with cc3:
+        kv("MA20 대비 괴리율", pct(g["gap_pct"]))
+    with cc4:
+        kv("오늘 적용 배수", f'{g["mult"]:.2f}T', color="var(--accent)")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    used_seed = g["cumulative_buy_amount"]
+    total_seed = cfg["capital"]
+    seed_pct = (used_seed / total_seed * 100) if total_seed else None
+    sc1, sc2, sc3 = st.columns(3)
+    with sc1:
+        kv(
+            "사용한 시드",
+            f'{money(used_seed)} / {money(total_seed)}' + (f' ({seed_pct:.1f}%)' if seed_pct is not None else ""),
+        )
+    with sc2:
+        kv("T 값", f'{g["current_T"]:.3f}회', color="var(--accent)")
+    with sc3:
+        kv(
+            "★ Star 값",
+            pct(g["star_pct"]),
+            color="var(--buy)" if g["star_pct"] is not None and g["star_pct"] < 0 else "var(--loss)",
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if g["divisor_remaining"] <= 0:
+        st.markdown(
+            f"""<div class="card"><div class="card-title">매수 가이드 <span class="tag loss">소진모드</span></div>
+            <div class="note warn">T값이 {cfg['splits']-1} 이상(소진모드 구간)입니다. 이 앱은 <b>일반모드</b> 로직만 지원하므로,
+            소진모드 매수/매도는 별도 기준으로 직접 판단해 주세요.</div></div>""",
+            unsafe_allow_html=True,
+        )
+    elif g["is_first_buy"]:
+        low = g["close"] * 1.10 if g["close"] is not None else None
+        high = g["close"] * 1.15 if g["close"] is not None else None
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">매수 가이드 <span class="tag buy">최초 매수</span></div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="note">보유수량이 없는 최초 매수입니다. 전일 종가 대비 <b>10~15% 위</b> 가격부터 아래로 '
+            f'LOC 매수를 걸어 목표금액({money(g["target_amount"])})을 소진하세요.</div>',
+            unsafe_allow_html=True,
+        )
+        b1, b2 = st.columns(2)
+        with b1:
+            kv("권장 시작가 (10~15% 위)", f'{money(low)} ~ {money(high)}' if low else "종가 입력 필요")
+        with b2:
+            kv(f'오늘 매수 목표금액 ({g["mult"]:.2f}T)', money(g["target_amount"]))
+        st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        half = g["target_amount"] / 2 if g["target_amount"] is not None else None
+        crash_rows = crash_tier_table(g["ma"], g["base1x"])
+        buy_qty_at_trigger = (
+            g["target_amount"] / g["buy_trigger"]
+            if g["target_amount"] is not None and g["buy_trigger"] not in (None, 0)
+            else None
+        )
+
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="card-title">매수 가이드 LOC <span class="tag buy">★ {pct(g["star_pct"])}</span> '
+            f'<span class="tag dim">{g["phase"]}</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="kv-value" style="font-size:22px; color:var(--buy);">'
+            f'{money(g["buy_trigger"])} × {shares_fmt(buy_qty_at_trigger)}</div>',
+            unsafe_allow_html=True,
+        )
+
+       
+
+        if crash_rows:
+            st.markdown(
+                '<div class="kv-label" style="margin-top:6px;">+@ 폭락장 추가 매수</div>',
+                unsafe_allow_html=True,
+            )
+            crash_lines = "".join(
+                f'<div style="display:flex; justify-content:space-between; '
+                f'font-family: ui-monospace, monospace; font-size:13px; padding:3px 0; color:var(--loss);">'
+                f'<span>- {row["tier"]}%</span><span>{money(row["price"])} × {shares_fmt(row["qty"])}</span></div>'
+                for row in crash_rows
+            )
+            st.markdown(f'<div class="note">{crash_lines}</div>', unsafe_allow_html=True)
+
+        if g["phase"] == "전반전":
+            st.markdown(
+                f'<div class="note"><b>전반전 매수:</b> 목표금액의 절반({money(half)})은 매수기준가 {money(g["buy_trigger"])}에, '
+                f'나머지 절반({money(half)})은 평단가 {money(r["avgCost"])}에 LOC 매수. '
+                f'급락 대비 그 아래로도 분할 LOC 매수 추가 권장.</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<div class="note"><b>후반전 매수:</b> 목표금액 전액({money(g["target_amount"])})을 '
+                f'매수기준가 {money(g["buy_trigger"])}에 LOC 매수. 급락 대비 그 아래로도 분할 LOC 매수 추가 권장.</div>',
+                unsafe_allow_html=True,
+            )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    if r["qty"] > 0:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="card-title">매도 가이드 LOC <span class="tag profit">★ {pct(g["star_pct"])}</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown('<div class="kv-label" style="margin-top:4px;">쿼터매도</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="kv-value" style="font-size:20px; color:var(--profit);">'
+            f'{money(g["star_point"])} × {shares_fmt(g["quarter_qty"])}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="kv-label" style="margin-top:6px;">지정가 매도 +{g["s_pct"]}%</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="kv-value" style="font-size:20px; color:var(--profit);">'
+            f'{money(g["sell_target"])} × {shares_fmt(g["remainder_qty"])}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="note">쿼터매도는 별지점에 LOC로, 나머지는 평단 대비 +{g["s_pct"]}% 지정가로 매일 동시에 걸어둡니다.</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- 자동 시세 ----------------
+with tab_market:
+    m = market
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="card-title">Yahoo Finance 자동 시세 '
+        f'<span class="tag buy">자동 갱신</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+    with cc1:
+        kv("현재 가격", money(m["price"]))
+    with cc2:
+        kv("MA20", money(m["ma20"]) if m["ma20"] is not None else "데이터 부족")
+    with cc3:
+        kv("MA20 괴리율", pct(m["gap_pct"]))
+    with cc4:
+        kv("적용 배수", f'{guide["mult"]:.2f}T')
+    with cc5:
+        kv("시장 상태", "장중" if m["market_open"] else "장외")
+
+    st.markdown(
+        f'<div class="note">데이터: <b>{m["source_label"]}</b> · '
+        f'마지막 업데이트: {m["fetched_at"][:19].replace("T", " ")} '
+        f'(미국 동부시간 기준)</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">최근 20일 종가 / MA20 계산에 사용</div>', unsafe_allow_html=True)
+
+    hist_rows = m.get("history", [])
+    if hist_rows:
+        hist_df = pd.DataFrame(hist_rows)
+        hist_df = hist_df.rename(
+            columns={"date": "날짜", "close": "종가"}
+        )
+        hist_df["종가"] = hist_df["종가"].map(lambda x: round(float(x), 2))
+        st.dataframe(
+            hist_df.tail(20).iloc[::-1],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if st.button("🔄 지금 Yahoo 시세 새로고침", use_container_width=True):
+        fetch_yahoo_market.clear()
+        st.rerun()
+
+# ---------------- 매매기록 ----------------
+with tab_trade:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(f'<div class="card-title">매매 기록 입력 · Round #{r["id"]}</div>', unsafe_allow_html=True)
+
+    trade_type_label = st.radio(
+        "거래 유형", ["매수", "쿼터매도", "지정가매도 (전량, 라운드 종료)"], horizontal=True
+    )
+    type_map = {"매수": "buy", "쿼터매도": "quarter_sell", "지정가매도 (전량, 라운드 종료)": "final_sell"}
+    ttype = type_map[trade_type_label]
+
+    default_price = 0.0
+    default_qty = 0.0
+    if ttype == "buy":
+        if guide and guide["buy_trigger"] is not None:
+            default_price = round(guide["buy_trigger"], 2)
+        elif guide and guide["close"] is not None:
+            default_price = round(guide["close"] * 1.1, 2)
+    elif ttype == "quarter_sell":
+        default_qty = round(r["qty"] / 4, 4)
+        if guide and guide["star_point"] is not None:
+            default_price = round(guide["star_point"], 2)
+    else:
+        default_qty = round(r["qty"], 4)
+        if guide and guide["sell_target"] is not None:
+            default_price = round(guide["sell_target"], 2)
+
+    with st.form("trade_form"):
+        t_date = st.date_input("날짜", value=date.today(), key="t_date")
+        tc1, tc2 = st.columns(2)
+        with tc1:
+            t_price = st.number_input("체결가 ($)", min_value=0.0, value=default_price, step=0.01, format="%.2f")
+        with tc2:
+            t_qty = st.number_input("체결수량", min_value=0.0, value=default_qty, step=0.0001, format="%.4f")
+
+        t_delta = None
+        if ttype == "buy":
+            amount_preview = t_price * t_qty
+            suggested_t = None
+            if guide and guide["target_amount"] and guide["target_amount"] > 0:
+                suggested_t = guide["mult"] * (amount_preview / guide["target_amount"])
+            t_delta = st.number_input(
+                "T 증가값 (자동 제안값, 필요시 직접 수정)",
+                value=round(suggested_t, 4) if suggested_t is not None else 0.0,
+                step=0.0001, format="%.4f",
+            )
+            st.markdown(
+                f'<div class="note">제안값 = 오늘 배수({guide["mult"] if guide else 1.0:.2f}T) × (체결금액 ÷ 오늘 목표매수금액).</div>',
+                unsafe_allow_html=True,
+            )
+        elif ttype == "quarter_sell":
+            st.markdown('<div class="note">쿼터매도 규칙: T값은 직전 T × 0.75 로 자동 갱신됩니다. 평단은 변하지 않습니다.</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="note">지정가매도(전량)는 라운드를 종료합니다. 실현손익이 집계되고 새 라운드가 자동으로 시작됩니다.</div>', unsafe_allow_html=True)
+
+        submitted = st.form_submit_button("기록 추가", use_container_width=True)
+
+    if submitted:
+        if t_price <= 0 or t_qty <= 0:
+            st.error("가격과 수량을 올바르게 입력하세요.")
+        elif ttype in ("quarter_sell", "final_sell") and t_qty > r["qty"] + 1e-9:
+            st.error("보유수량보다 많습니다.")
+        else:
+            d_str = t_date.isoformat()
+            if ttype == "buy":
+                apply_buy(r, d_str, t_price, t_qty, t_delta or 0.0)
+            elif ttype == "quarter_sell":
+                apply_quarter_sell(r, d_str, t_price, t_qty)
+            else:
+                apply_final_sell(current_p, r, d_str, t_price, t_qty)
+            persist()
+            st.success("기록이 추가되었습니다.")
+            st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- 히스토리 (거래 삭제 기능 추가) ----------------
+with tab_history:
+    if not current_p["rounds"]:
+        st.caption("기록이 없습니다.")
+    else:
+        # ---- 그래프 1: 평단가 vs 현재가 ----
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">📈 평단가 vs 현재가 (현재 라운드)</div>', unsafe_allow_html=True)
+        hist_rows_all = market.get("history", []) if market else []
+        if hist_rows_all and r["trades"]:
+            price_df = pd.DataFrame(hist_rows_all)
+            price_df["date"] = pd.to_datetime(price_df["date"])
+            price_df = price_df.sort_values("date").rename(columns={"close": "현재가"})
+
+            trade_df = pd.DataFrame([{"date": t["date"], "평단가": t["avgAfter"]} for t in r["trades"]])
+            trade_df["date"] = pd.to_datetime(trade_df["date"])
+            trade_df = trade_df.sort_values("date")
+
+            merged = pd.merge_asof(price_df, trade_df, on="date", direction="backward")
+            chart_df = merged[["date", "현재가", "평단가"]].dropna(subset=["현재가"]).set_index("date")
+            st.line_chart(chart_df, use_container_width=True)
+        else:
+            st.caption("표시할 데이터가 부족합니다 (현재 라운드 거래 기록 또는 시세 데이터 필요).")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ---- 그래프 2: 라운드별 수익금 / 수익률 ----
+        closed_rounds_for_chart = [x for x in current_p["rounds"] if x["status"] == "closed"]
+        if closed_rounds_for_chart:
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown('<div class="card-title">💰 라운드별 수익금 / 수익률</div>', unsafe_allow_html=True)
+            perf_rows = []
+            cum = 0.0
+            for rr2 in closed_rounds_for_chart:
+                pnl = rr2.get("realizedPnl", 0.0)
+                cum += pnl
+                ret_pct = (pnl / rr2["startCapital"] * 100) if rr2.get("startCapital") else None
+                perf_rows.append({
+                    "라운드": f'#{rr2["id"]}',
+                    "수익금": round(pnl, 2),
+                    "누적수익금": round(cum, 2),
+                    "수익률(%)": round(ret_pct, 2) if ret_pct is not None else None,
+                })
+            perf_df = pd.DataFrame(perf_rows).set_index("라운드")
+
+            pc1, pc2 = st.columns(2)
+            with pc1:
+                st.caption("라운드별 수익금 ($)")
+                st.bar_chart(perf_df[["수익금"]], use_container_width=True)
+            with pc2:
+                st.caption("라운드별 수익률 (%)")
+                st.bar_chart(perf_df[["수익률(%)"]], use_container_width=True)
+            st.caption("누적 실현손익 추이")
+            st.line_chart(perf_df[["누적수익금"]], use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">전체 요약</div>', unsafe_allow_html=True)
+        h1, h2 = st.columns(2)
+        with h1:
+            kv("완료된 라운드", str(sum(1 for x in current_p["rounds"] if x["status"] == "closed")))
+        with h2:
+            kv("누적 실현손익", money(total_realized), color="var(--profit)" if total_realized >= 0 else "var(--loss)")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown("#### 라운드별 상세 기록")
+        st.caption("완료된 라운드를 포함해 모든 라운드 기록을 아래에서 펼쳐볼 수 있습니다.")
+
+        for rr in reversed(current_p["rounds"]):
+            if rr["status"] == "active":
+                status_html = '<span class="tag dim">진행중</span>'
+            else:
+                pnl = rr.get("realizedPnl", 0)
+                status_html = f'<span class="tag {"profit" if pnl>=0 else "loss"}">{"수익" if pnl>=0 else "손절"} {money(pnl)}</span>'
+            period = rr["startDate"] + (f' ~ {rr["closedDate"]}' if rr.get("closedDate") else "")
+            expander_label = f'Round #{rr["id"]}  ·  {period}  ·  {"진행중" if rr["status"]=="active" else ("수익 " + money(rr.get("realizedPnl", 0)) if rr.get("realizedPnl", 0) >= 0 else "손절 " + money(rr.get("realizedPnl", 0)))}'
+
+            with st.expander(expander_label, expanded=(rr["status"] == "active")):
+                st.markdown('<div class="round-block">', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">'
+                    f'<div><b>Round #{rr["id"]}</b> <span style="color:var(--text-faint); font-size:12px;">{period}</span></div>'
+                    f'<div>{status_html}</div></div>',
+                    unsafe_allow_html=True,
+                )
+                if rr["trades"]:
+                    rows = []
+                    type_label = {"buy": "매수", "quarter_sell": "쿼터매도", "final_sell": "지정가매도"}
+                    for idx, t in enumerate(rr["trades"]):
+                        rows.append({
+                            "ID": t.get("id", idx + 1),
+                            "날짜": t["date"],
+                            "유형": type_label[t["type"]],
+                            "가격": round(t["price"], 2),
+                            "수량": round(t["qty"], 4),
+                            "금액": round(t["amount"], 2),
+                            "T": round(t["tAfter"], 3),
+                            "평단": round(t["avgAfter"], 2),
+                            "손익": (round(t["pnl"], 2) if t["pnl"] is not None else "—"),
+                        })
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                    # 거래 기록 삭제 UI (진행 중인 라운드 또는 최근 라운드 개별 수정 가능)
+                    if rr["status"] == "active":
+                        st.markdown("---")
+                        del_col1, del_col2 = st.columns([3, 1])
+                        with del_col1:
+                            del_trade_id = st.selectbox(
+                                "삭제할 매매 기록 선택",
+                                options=[t.get("id", i+1) for i, t in enumerate(rr["trades"])],
+                                format_func=lambda tid: next(f"ID {tid}: {t['date']} {type_label[t['type']]} ({money(t['price'])}, {t['qty']}주)" for i, t in enumerate(rr["trades"]) if t.get("id", i+1) == tid),
+                                key=f"del_trade_sel_{rr['id']}"
+                            )
+                        with del_col2:
+                            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                            if st.button("🗑️ 기록 삭제", key=f"btn_del_trade_{rr['id']}", use_container_width=True):
+                                rr["trades"] = [t for i, t in enumerate(rr["trades"]) if t.get("id", i+1) != del_trade_id]
+                                recalculate_round(rr, rr["startCapital"])
+                                persist()
+                                st.success("선택한 거래가 삭제되고 라운드 상태가 재계산되었습니다.")
+                                st.rerun()
+                else:
+                    st.caption("거래 기록 없음")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- 설정 ----------------
+with tab_settings:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">포트폴리오 설정</div>', unsafe_allow_html=True)
+    with st.form("settings_form"):
+        p_name = st.text_input("포트폴리오 이름", value=current_p["name"])
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            n_symbol = st.selectbox("종목", ["TQQQ", "SOXL"], index=["TQQQ", "SOXL"].index(cfg["symbol"]))
+        with sc2:
+            n_splits = st.selectbox("분할 수", [20, 40], index=[20, 40].index(cfg["splits"]))
+        n_capital = st.number_input("기준 원금 ($, 단리 모드에서 다음 라운드 시작자본)", min_value=0.0, value=float(cfg["capital"]), step=100.0)
+        n_compounding = st.radio(
+            "라운드 종료 후 재투입 방식", ["복리", "단리"], index=0 if cfg["compounding"] else 1
+        ) == "복리"
+        save_submit = st.form_submit_button("저장", use_container_width=True)
+    if save_submit:
+        current_p["name"] = p_name
+        cfg["symbol"] = n_symbol
+        cfg["splits"] = n_splits
+        cfg["capital"] = n_capital
+        cfg["compounding"] = n_compounding
+        persist()
+        st.success("저장되었습니다.")
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">🗑️ 이 포트폴리오 삭제</div>', unsafe_allow_html=True)
+    st.markdown('<div class="note warn">이 포트폴리오의 모든 데이터가 삭제됩니다. 되돌릴 수 없습니다.</div>', unsafe_allow_html=True)
+    confirm_del_p = st.checkbox("정말로 이 포트폴리오를 삭제하겠습니다", key="chk_del_p")
+    if st.button("포트폴리오 삭제", disabled=not confirm_del_p, type="primary"):
+        data["portfolios"] = [p for p in data["portfolios"] if p["id"] != active_id]
+        data["active_portfolio_id"] = None
+        persist()
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
