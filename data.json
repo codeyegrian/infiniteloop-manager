@@ -410,45 +410,7 @@
           "status": "active"
         }
       ]
-    },
-    {
-      "id": 4,
-      "name": "2222",
-      "config": {
-        "symbol": "TQQQ",
-        "splits": 40,
-        "capital": 20000.0,
-        "compounding": true
-      },
-      "price_history": [],
-      "rounds": [
-        {
-          "id": 1,
-          "startDate": "2026-08-15",
-          "startCapital": 20000.0,
-          "cash": 9610.19,
-          "qty": 123.0,
-          "avgCost": 84.47,
-          "T": 20.7796,
-          "trades": [
-            {
-              "id": 1,
-              "date": "2026-08-15",
-              "type": "buy",
-              "price": 84.47,
-              "qty": 123.0,
-              "amount": 10389.81,
-              "tDelta": 20.7796,
-              "tAfter": 20.7796,
-              "avgAfter": 84.47,
-              "cashAfter": 9610.19,
-              "pnl": null
-            }
-          ],
-          "status": "active"
-        }
-      ]
     }
   ],
-  "active_portfolio_id": 4
+  "active_portfolio_id": null
 }
