@@ -386,7 +386,31 @@
           "status": "active"
         }
       ]
+    },
+    {
+      "id": 3,
+      "name": "111",
+      "config": {
+        "symbol": "TQQQ",
+        "splits": 40,
+        "capital": 20000.0,
+        "compounding": true
+      },
+      "price_history": [],
+      "rounds": [
+        {
+          "id": 1,
+          "startDate": "2026-08-16",
+          "startCapital": 20000.0,
+          "cash": 20000.0,
+          "qty": 0.0,
+          "avgCost": 0.0,
+          "T": 0.0,
+          "trades": [],
+          "status": "active"
+        }
+      ]
     }
   ],
-  "active_portfolio_id": null
+  "active_portfolio_id": 3
 }
