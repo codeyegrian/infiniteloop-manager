@@ -1366,21 +1366,45 @@ with tab_settings:
 
         ok = persist()
 
-    if ok:
-        st.success("✅ 저장되었습니다.")
-        st.rerun()
-    else:
-        st.error("❌ 저장에 실패했습니다. GitHub 설정을 확인해주세요.")
+        if ok:
+            st.success("✅ 저장되었습니다.")
+            st.rerun()
+        else:
+            st.error("❌ 저장에 실패했습니다. GitHub 설정을 확인해주세요.")
 
-    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-title">🗑️ 이 포트폴리오 삭제</div>', unsafe_allow_html=True)
-    st.markdown('<div class="note warn">이 포트폴리오의 모든 데이터가 삭제됩니다. 되돌릴 수 없습니다.</div>', unsafe_allow_html=True)
-    confirm_del_p = st.checkbox("정말로 이 포트폴리오를 삭제하겠습니다", key="chk_del_p")
-    if st.button("포트폴리오 삭제", disabled=not confirm_del_p, type="primary"):
-        data["portfolios"] = [p for p in data["portfolios"] if p["id"] != active_id]
-        data["active_portfolio_id"] = None
-        persist()
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------
+# 포트폴리오 삭제
+# ---------------------------------------------------------
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.markdown('<div class="card-title">🗑️ 이 포트폴리오 삭제</div>', unsafe_allow_html=True)
+
+st.markdown(
+    '<div class="note warn">이 포트폴리오의 모든 데이터가 삭제됩니다. 되돌릴 수 없습니다.</div>',
+    unsafe_allow_html=True
+)
+
+confirm_del_p = st.checkbox(
+    "정말로 이 포트폴리오를 삭제하겠습니다",
+    key="chk_del_p"
+)
+
+if st.button(
+    "포트폴리오 삭제",
+    disabled=not confirm_del_p,
+    type="primary"
+):
+    data["portfolios"] = [
+        p for p in data["portfolios"]
+        if p["id"] != active_id
+    ]
+
+    data["active_portfolio_id"] = None
+
+    persist()
+    st.rerun()
+
+st.markdown("</div>", unsafe_allow_html=True)
