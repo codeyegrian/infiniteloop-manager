@@ -823,6 +823,11 @@ if current_p["config"] is None:
 cfg = current_p["config"]
 r = active_round(current_p)
 
+if r is None:
+    start_new_round(current_p, cfg["capital"], date.today().isoformat())
+    persist()
+    st.rerun()
+    
 try:
     market = fetch_yahoo_market(cfg["symbol"])
     market_error = None
