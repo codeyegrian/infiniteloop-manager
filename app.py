@@ -11,6 +11,8 @@ Streamlit 앱 — app.py
 
 import json
 import os
+import base64
+import requests
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
@@ -28,19 +30,15 @@ st_autorefresh(interval=60_000, key="yahoo_market_refresh")
 # =============================================================================
 # 저장소 (GitHub 저장소의 data.json — 토큰이 없으면 로컬 파일로 자동 폴백)
 # =============================================================================
-def get_secret(key, default=""):
-    """st.secrets 에 없으면 환경변수, 그것도 없으면 default."""
-    try:
-        val = st.secrets.get(key, None)
-        if val:
-            return val
-    except Exception:
-        pass
-    return os.environ.get(key, default)
- 
-GITHUB_TOKEN = get_secret("GITHUB_TOKEN")
-REPO_NAME = get_secret("REPO_NAME")          # 예: "myid/myrepo"
-BRANCH = get_secret("BRANCH", "main")
+
+try:
+    GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+    REPO_NAME = st.secrets.get("REPO_NAME", "codeyegrian/infiniteloop-manager")
+except Exception:
+    GITHUB_TOKEN = ""
+    REPO_NAME = "codeyegrian/infiniteloop-manager"
+
+BRANCH = "main"
 DATA_FILE = "data.json"                       # 저장소 루트 기준 파일명 (로컬 폴백 시에도 동일 파일명 사용)
  
 HEADERS = {
@@ -60,14 +58,14 @@ def github_load_file(filename, default_value):
  
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
     try:
-        response = requests.get(url, headers=HEADERS, params={"ref": BRANCH}, timeout=5)
-        if response.status_code == 200:
-            file_data = response.json()
-            content_encoded = file_data.get("content", "")
-            decoded_bytes = base64.b64decode(content_encoded)
-            return json.loads(decoded_bytes.decode("utf-8"))
+           response = requests.get(url, headers=HEADERS, timeout=5)
+           if response.status_code == 200:
+               file_data = response.json()
+               content_encoded = file_data.get("content", "")
+               decoded_bytes = base64.b64decode(content_encoded)
+               return json.loads(decoded_bytes.decode("utf-8"))
     except Exception:
-        pass
+           pass
     return default_value
  
 def github_save_file(filename, data):
@@ -99,6 +97,17 @@ def github_save_file(filename, data):
             return False, f"GitHub Error {put_resp.status_code}: {put_resp.text}"
     except Exception as e:
         return False, f"Exception: {str(e)}"
+
+def load_data():
+    loaded = github_load_file("data.json", [])
+    if isinstance(loaded, list):
+        return sorted(loaded, key=lambda x: str(x.get("Date", "")), reverse=True)
+    return []
+
+def save_data(data):
+    sorted_data = sorted(data, key=lambda x: str(x.get("Date", "")), reverse=True)
+    return github_save_file("data.json", sorted_data)
+
 
 # 데이터 구조 확장: 다중 포트폴리오(portfolios) 지원
 DEFAULT_DATA = {
@@ -656,10 +665,12 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 if "data" not in st.session_state:
     st.session_state.data = load_data()
+
 data = st.session_state.data
 
 def persist():
-    save_data(data)
+    ok = save_data(data)
+    return ok
 
 # ---- 사이드바: 백업 / 복원 ----
 with st.sidebar:
@@ -674,15 +685,50 @@ with st.sidebar:
     uploaded = st.file_uploader("📂 백업 파일 불러오기", type=["json"])
     if uploaded is not None:
         if st.button("🔄 이 파일로 복원", use_container_width=True):
-            st.session_state.data = json.load(uploaded)
-            save_data(st.session_state.data)
-            st.rerun()
+            try:
+                uploaded_data = json.load(uploaded)
+
+            # 백업 파일을 현재 표준 구조로 변환
+                restored_data = normalize_data(uploaded_data)
+
+            # 메모리에 적용
+                st.session_state.data = restored_data
+
+            # GitHub / 로컬 data.json에 저장
+                ok = save_data(restored_data)
+
+                if ok:
+                    st.success("✅ 데이터 복원이 완료되었습니다.")
+                    st.rerun()
+                else:
+                    st.error("❌ 데이터 저장에 실패했습니다. GitHub 설정을 확인해주세요.")
+
+            except Exception as e:
+                st.error(f"❌ 백업 파일 복원 중 오류: {e}")
+
+
     st.markdown("---")
     st.caption("💡 데이터는 서버의 data.json 파일에 저장됩니다. 주기적으로 백업을 권장합니다.")
 
 # 활성 포트폴리오 가져오기
-portfolios = data.get("portfolios", [])
-active_id = data.get("active_portfolio_id", None)
+if isinstance(data, dict):
+    portfolios = data.get("portfolios", [])
+elif isinstance(data, list):
+    portfolios = data
+else:
+    portfolios = []
+
+if isinstance(data, dict):
+    portfolios = data.get("portfolios", [])
+    active_id = data.get("active_portfolio_id", None)
+
+elif isinstance(data, list):
+    portfolios = data
+    active_id = portfolios[0].get("id") if portfolios else None
+
+else:
+    portfolios = []
+    active_id = None
 
 # 상단 내비게이션 (포트폴리오 선택 및 대시보드 이동)
 if active_id is not None:
@@ -1317,9 +1363,15 @@ with tab_settings:
         cfg["splits"] = n_splits
         cfg["capital"] = n_capital
         cfg["compounding"] = n_compounding
-        persist()
-        st.success("저장되었습니다.")
+
+        ok = persist()
+
+    if ok:
+        st.success("✅ 저장되었습니다.")
         st.rerun()
+    else:
+        st.error("❌ 저장에 실패했습니다. GitHub 설정을 확인해주세요.")
+
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
