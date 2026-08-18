@@ -180,15 +180,15 @@ def determine_multiplier(close, ma20val):
     if close >= ma20val:
         return 1.0, "MA20 상단"
     drawdown = (ma20val - close) / ma20val * 100
-    tiers = [(55, 3.0), (50, 3.5), (45, 3.5), (40, 2.5), (35, 2.0)]
+    tiers = [(47, 2.5), (41, 2.1), (35, 1.95)]
     for th, mult in tiers:
         if drawdown >= th:
             return mult, f"MA20 대비 -{th}% 이상 구간"
-    return 0.73, "MA20 하단 (35% 미만 이격)"
+    return 0.75, "MA20 하단 (35% 미만 이격)"
 
 def crash_tier_table(ma20val, base1x):
-    """MA20 대비 추가 하락률(35/40/45/50/55%)별 폭락장 매수 단가·수량표"""
-    tiers = [(35, 2.0), (40, 2.5), (45, 3.5), (50, 3.5), (55, 3.0)]
+    """MA20 대비 추가 하락률(35/41/47/50/55%)별 폭락장 매수 단가·수량표"""
+    tiers = [(35, 1.95), (41, 2.1), (47, 2.5)]
     rows = []
     if ma20val is None or base1x is None:
         return rows
@@ -312,11 +312,11 @@ def fetch_yahoo_market(symbol):
         live_timestamp = completed.index[-1]
 
     gap_pct = (
-        ((live_price - ma20_val) / ma20_val * 100)
-        if ma20_val is not None and ma20_val > 0
-        else None
-    )
-
+    ((live_price - ma20_val) / ma20_val * 100)
+    if ma20_val is not None and live_price is not None and ma20_val > 0
+    else None
+)
+    
     # 표시용 최근 60개 일봉
     hist = completed.tail(60).copy()
     history_rows = []
@@ -462,46 +462,61 @@ def compute_guide(p, market=None):
     gap_pct = market.get("gap_pct")
     mult, tier = determine_multiplier(close, ma)
 
-    T = r["T"]
-    phase = phase_of(T, splits)
-
-    star_pct = star_percent(symbol, splits, T)
-    star_point = (
-        r["avgCost"] * (1 + star_pct / 100)
-        if r["avgCost"] > 0 else None
-    )
-    buy_trigger = (
-        star_point - 0.01
-        if star_point is not None else None
-    )
-
-    divisor_remaining = splits - T
+    # =========================================================
     # 1회 매수액
+    # =========================================================
     base1x = (
         cfg["capital"] / splits
         if splits > 0 else None
     )
 
-# 오늘 적용 배수를 적용한 매수 목표금액
-    target_amount = (
-        base1x * mult
-        if base1x is not None else None
-    )
-
-# 매수 누적액
+    # =========================================================
+    # 현재 누적 매수금액
+    # = 현재 평단가 × 현재 보유수량
+    # =========================================================
     cumulative_buy_amount = (
         r["avgCost"] * r["qty"]
         if r["qty"] > 0 else 0.0
     )
 
-# 현재 T
+    # =========================================================
+    # 현재 T
+    # = (평단가 × 보유수량) ÷ 1회 매수액
+    # =========================================================
     current_T = (
         cumulative_buy_amount / base1x
         if base1x is not None and base1x > 0
         else 0.0
     )
 
-# 오늘 매수 수량
+    # =========================================================
+    # T는 이제 current_T 하나만 사용
+    # =========================================================
+    T = current_T
+
+    phase = phase_of(T, splits)
+
+    star_pct = star_percent(symbol, splits, T)
+
+    star_point = (
+        r["avgCost"] * (1 + star_pct / 100)
+        if r["avgCost"] > 0 else None
+    )
+
+    buy_trigger = (
+        star_point - 0.01
+        if star_point is not None else None
+    )
+
+    divisor_remaining = splits - T
+
+    # 오늘 적용 배수를 적용한 매수 목표금액
+    target_amount = (
+        base1x * mult
+        if base1x is not None else None
+    )
+
+    # 오늘 매수 수량
     buy_qty = (
         target_amount / close
         if target_amount is not None
@@ -509,9 +524,9 @@ def compute_guide(p, market=None):
         and close > 0
         else None
     )
-    
 
     s_pct = sell_profit_pct(symbol)
+
     sell_target = (
         r["avgCost"] * (1 + s_pct / 100)
         if r["avgCost"] > 0 else None
@@ -519,7 +534,8 @@ def compute_guide(p, market=None):
 
     quarter_qty = r["qty"] / 4
     remainder_qty = r["qty"] - quarter_qty
-    is_first_buy = (r["qty"] == 0 and r["T"] == 0)
+
+    is_first_buy = (r["qty"] == 0 and current_T == 0)
 
     return dict(
         round=r,
@@ -528,16 +544,19 @@ def compute_guide(p, market=None):
         gap_pct=gap_pct,
         mult=mult,
         tier=tier,
+
+        # 현재 T는 current_T 하나만 사용
         phase=phase,
+        current_T=current_T,
+
         star_pct=star_pct,
         star_point=star_point,
         buy_trigger=buy_trigger,
+
         base1x=base1x,
         target_amount=target_amount,
-
-        # 현재 T 및 매수수량
         cumulative_buy_amount=cumulative_buy_amount,
-        current_T=current_T,
+
         buy_qty=buy_qty,
         one_time_buy_amount=base1x,
 
@@ -788,9 +807,9 @@ if active_id is None:
                         
                         if g and g["buy_trigger"]:
                             st.markdown(
-                                f'<div class="note"><b>🟢 LOC 매수:</b> {money(g["buy_trigger"])} × {shares_fmt(g["buy_qty"])}주 이하<br>'
-                                f'<b>🟡 쿼터매도:</b>{money(g["star_point"])} × {shares_fmt(g["quarter_qty"])}주<br>'
-                                f'<b>🔴 매도 목표:</b> {money(g["sell_target"])} × {shares_fmt(g["remainder_qty"])}주</div>',
+                                f'<div class="note"><b>🟢 LOC 매수:</b> {money(g["buy_trigger"])}이하 × {shares_fmt(g["buy_qty"])} <br>'
+                                f'<b>🟡 쿼터매도:</b>{money(g["star_point"])} × {shares_fmt(g["quarter_qty"])}<br>'
+                                f'<b>🔴 매도 목표:</b> {money(g["sell_target"])} × {shares_fmt(g["remainder_qty"])}</div>',
                                 unsafe_allow_html=True,
                             )
                     else:
@@ -906,24 +925,28 @@ if guide and guide["close"] is not None and r["qty"] > 0:
     unrealized = (guide["close"] - r["avgCost"]) * r["qty"]
 
 st.markdown(
-    f'<div class="round-badge">{cfg["symbol"]} · {cfg["splits"]}분할 · Round #{r["id"]} · {phase_of(r["T"], cfg["splits"])}</div>',
+    f'<div class="round-badge">{cfg["symbol"]} · {cfg["splits"]}분할 · Round #{r["id"]} · {phase_of(guide["current_T"], cfg["splits"])}</div>',
     unsafe_allow_html=True,
 )
 
+# ------------------ Modified Cockpit Columns ------------------
 c1, c2, c3, c4, c5 = st.columns(5)
 with c1:
     kv("평단가", money(r["avgCost"]) if r["avgCost"] > 0 else "—")
 with c2:
     kv("보유수량", shares_fmt(r["qty"]))
 with c3:
-    kv("잔금", money(r["cash"]))
+    # Calculate dynamic remaining cash: Total Seed - (Avg Cost * Qty)
+    rem_cash = cfg["capital"] - (r["avgCost"] * r["qty"])
+    kv("잔금", money(rem_cash))
 with c4:
     kv("미실현손익", money(unrealized), color=("var(--profit)" if (unrealized or 0) >= 0 else "var(--loss)") if unrealized is not None else None)
 with c5:
     kv("누적 실현손익", money(total_realized), color="var(--profit)" if total_realized >= 0 else "var(--loss)")
+# --------------------------------------------------------------
 
 splits = cfg["splits"]
-T = r["T"]
+T = guide["current_T"] if guide else 0.0
 pos = max(0, min(100, T / splits * 100))
 z1 = (splits / 2) / splits * 100
 z2 = ((splits - 1) - splits / 2) / splits * 100
@@ -1024,15 +1047,23 @@ with tab_guide:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown(
             f'<div class="card-title">매수 가이드 LOC <span class="tag buy">★ {pct(g["star_pct"])}</span> '
-            f'<span class="tag dim">{g["phase"]}</span></div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<div class="kv-value" style="font-size:22px; color:var(--buy);">'
-            f'{money(g["buy_trigger"])} × {shares_fmt(buy_qty_at_trigger)}</div>',
+            f'<span class="tag dim">{g["phase"]} </span></div>',
             unsafe_allow_html=True,
         )
 
+        half_qty = (buy_qty_at_trigger / 2) if buy_qty_at_trigger else 0
+        st.markdown(
+            f'<div class="kv-value" style="font-size:18px; margin-top:8px; line-height:1.6;">'
+            f'<span style="color:var(--buy); font-weight:bold;">{money(g["buy_trigger"])} × {shares_fmt(buy_qty_at_trigger)}</span></div> '
+            f'<span style="color:var(--text-faint); font-weight:bold;">(</span>'
+            f'<span style="font-size:9pt; color:#000000; font-weight:bold;">평단매수</span> '
+            f'<span style="color:#4DABF7;">{money(r["avgCost"])} × {shares_fmt(half_qty)}</span>'
+            f'<span style="margin-left:20px; font-size:9pt; color:#000000; font-weight:bold;">★매수</span> '
+            f'<span style="color:#B197FC;">{money(g["buy_trigger"])} × {shares_fmt(half_qty)}</span>'
+            f'<span style="color:var(--text-faint); font-weight:bold;">)</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
        
 
         if crash_rows:
@@ -1080,7 +1111,7 @@ with tab_guide:
             unsafe_allow_html=True,
         )
         st.markdown(
-            f'<div class="kv-value" style="font-size:20px; color:var(--profit);">'
+            f'<div class="kv-value" style="font-size:18px; color:var(--profit);">'
             f'{money(g["sell_target"])} × {shares_fmt(g["remainder_qty"])}</div>',
             unsafe_allow_html=True,
         )
