@@ -6,7 +6,7 @@
       "config": {
         "symbol": "SOXL",
         "splits": 40,
-        "capital": 100000.0,
+        "capital": 80000.0,
         "compounding": true
       },
       "price_history": [],
