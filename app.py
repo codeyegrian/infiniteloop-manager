@@ -608,22 +608,6 @@ CSS = """
   --card-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0F1219;
-    --surface: #171B24;
-    --surface2: #1D2330;
-    --border: #2A3140;
-    --text: #E8EAEE;
-    --text-dim: #8B93A6;
-    --text-faint: #545C6E;
-    --buy: #4FD1C5;
-    --profit: #E8B44C;
-    --loss: #E5636B;
-    --accent: #7C9CFF;
-    --card-shadow: none;
-  }
-}
 
 .stApp { background: var(--bg); }
 .block-container { max-width: 920px; padding-top: 1.2rem; }
@@ -1052,20 +1036,22 @@ with tab_guide:
         )
 
         half_qty = (buy_qty_at_trigger / 2) if buy_qty_at_trigger else 0
+        current_price_qty = g["buy_qty"]
         st.markdown(
             f'<div class="kv-value" style="font-size:18px; margin-top:8px; line-height:1.6;">'
-            f'<span style="color:var(--buy); font-weight:bold;">{money(g["buy_trigger"])} × {shares_fmt(buy_qty_at_trigger)}</span></div> '
-            f'<span style="color:var(--text-faint); font-weight:bold;">(</span>'
+            f'<span style="color:var(--buy); font-weight:bold;">{money(g["buy_trigger"])} × {shares_fmt(buy_qty_at_trigger)} </span>'
+            f'<span style="margin-left:35px; font-size:9pt; color:#000000; font-weight:bold;">현재가기준 '
+            f'<span style="font-size:12pt;color:#4DABF7;">{money(g["close"])} × {shares_fmt(current_price_qty)}</span><br>'
+            f'<span style="color:var(--text-faint); font-weight:bold;">(</span>'            
             f'<span style="font-size:9pt; color:#000000; font-weight:bold;">평단매수</span> '
-            f'<span style="color:#4DABF7;">{money(r["avgCost"])} × {shares_fmt(half_qty)}</span>'
+            f'<span style="font-size:12pt;color:#4DABF7;">{money(r["avgCost"])} × {shares_fmt(half_qty)}</span>'
             f'<span style="margin-left:20px; font-size:9pt; color:#000000; font-weight:bold;">★매수</span> '
-            f'<span style="color:#B197FC;">{money(g["buy_trigger"])} × {shares_fmt(half_qty)}</span>'
+            f'<span style="font-size:12pt;color:#B197FC;">{money(g["buy_trigger"])} × {shares_fmt(half_qty)}</span>'
             f'<span style="color:var(--text-faint); font-weight:bold;">)</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
        
-
         if crash_rows:
             st.markdown(
                 '<div class="kv-label" style="margin-top:6px;">+@ 폭락장 추가 매수</div>',
@@ -1100,18 +1086,18 @@ with tab_guide:
             f'<div class="card-title">매도 가이드 LOC <span class="tag profit">★ {pct(g["star_pct"])}</span></div>',
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="kv-label" style="margin-top:4px;">쿼터매도</div>', unsafe_allow_html=True)
+        st.markdown('<div class="kv-label" style="margin-top:4px;font-weight:bold;">쿼터매도</div>', unsafe_allow_html=True)
         st.markdown(
-            f'<div class="kv-value" style="font-size:20px; color:var(--profit);">'
+            f'<div class="kv-value" style="font-size:19px; color:var(--profit);">'
             f'{money(g["star_point"])} × {shares_fmt(g["quarter_qty"])}</div>',
             unsafe_allow_html=True,
         )
         st.markdown(
-            f'<div class="kv-label" style="margin-top:6px;">지정가 매도 +{g["s_pct"]}%</div>',
+            f'<div class="kv-label" style="margin-top:6px;font-weight:bold;">지정가 매도 +{g["s_pct"]}%</div>',
             unsafe_allow_html=True,
         )
         st.markdown(
-            f'<div class="kv-value" style="font-size:18px; color:var(--profit);">'
+            f'<div class="kv-value" style="font-size:19px; color:var(--profit);">'
             f'{money(g["sell_target"])} × {shares_fmt(g["remainder_qty"])}</div>',
             unsafe_allow_html=True,
         )
