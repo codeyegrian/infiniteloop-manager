@@ -619,7 +619,13 @@
               "pnl": null
             }
           ],
-          "status": "active"
+          "status": "active",
+          "seedCash": 10532.290000000014,
+          "reservedProfit": 0.0,
+          "realizedPnl": 0.0,
+          "sameDayReentry": false,
+          "reverseStartedDate": null,
+          "reverseFirstSellDone": false
         }
       ]
     },
@@ -969,7 +975,13 @@
               "pnl": null
             }
           ],
-          "status": "active"
+          "status": "active",
+          "seedCash": 9842.9393,
+          "reservedProfit": 0.0,
+          "realizedPnl": 0.0,
+          "sameDayReentry": false,
+          "reverseStartedDate": null,
+          "reverseFirstSellDone": false
         }
       ]
     }
