@@ -984,31 +984,7 @@
           "reverseFirstSellDone": false
         }
       ]
-    },
-    {
-      "id": 3,
-      "name": "soxl",
-      "config": {
-        "symbol": "SOXL",
-        "splits": 40,
-        "capital": 80000.0,
-        "compounding": true
-      },
-      "price_history": [],
-      "rounds": [
-        {
-          "id": 1,
-          "startDate": "2026-09-11",
-          "startCapital": 80000.0,
-          "cash": 80000.0,
-          "qty": 0.0,
-          "avgCost": 0.0,
-          "T": 0.0,
-          "trades": [],
-          "status": "active"
-        }
-      ]
     }
   ],
-  "active_portfolio_id": 3
+  "active_portfolio_id": null
 }
