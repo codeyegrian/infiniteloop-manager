@@ -1,5 +1,5 @@
 """
-추추무매
+추추무매v3.0
 Streamlit 앱 — app.py
  
 실행: streamlit run app.py
@@ -16,7 +16,7 @@ Streamlit 앱 — app.py
    손절이면 매도대금 전액 잔금 편입 (기존: 항상 전액 편입하던 오류 수정)
 4. 매수 목표금액은 항상 절반씩 나눠 "평단가"와 "★지점(별지점)"에 각각 매수
    (기존: 두 수량 모두 별지점 가격으로 계산하던 오류 수정, 전반전/후반전 구분 로직 제거 - 문서에 없는 내용)
-5. 20일선 위에 있어도 오늘 종가가 20일전 종가보다 낮으면 하단(0.75T) 규칙 적용 (문서 2-1 규칙, 기존 미구현)
+5. 42일선 위에 있어도 오늘 종가가 20일전 종가보다 낮으면 하단(0.76T) 규칙 적용 (문서 2-1 규칙, 기존 미구현)
 6. 실제 체결 가능한 주식 수량은 정수 내림으로 표시 (기존: 반올림 오류)
 7. ★값 색상(수익=초록/손절=빨강) 로직 반대 오류 수정
 8. 백업 복원 시 호출되던 normalize_data() 함수가 정의되어 있지 않던 오류 수정 (NameError 발생하던 버그)
@@ -36,7 +36,7 @@ Streamlit 앱 — app.py
     종료된 라운드가 '진행중'으로 되살아나던 오류 수정
 17. is_first_buy 의 부동소수점 직접 비교(T == 0) 를 허용오차 비교로 수정
 18. phase_of 소진모드 판정을 문서 기준(T > 분할수-1) 으로 수정
-19. 미국 증시 휴장일에 '장중'으로 잘못 표시되고 MA20 계산에서 오늘을 제외하던 오류 수정
+19. 미국 증시 휴장일에 '장중'으로 잘못 표시되고 MA42 계산에서 오늘을 제외하던 오류 수정
     (최신 일봉 날짜가 오늘인지로 실제 거래일 여부를 판정)
 20. 콕핏에 '총자산'(잔금 + 평가금액 + 미편입 실현수익) 표시 추가 — 증권사 잔고 대조용
 21. GitHub 토큰 미설정 시 로컬 파일 저장은 휘발성이므로 사이드바에 경고 표시
@@ -203,82 +203,82 @@ def star_percent(symbol, splits, T):
 def sell_profit_pct(symbol):
     return 15 if symbol == "TQQQ" else 20
  
-def ma20(history):
-    if len(history) < 20:
+def ma42(history):
+    if len(history) < 42:
         return None
-    last20 = history[-20:]
-    return sum(p["close"] for p in last20) / 20
+    last42 = history[-42:]
+    return sum(p["close"] for p in last42) / 42
  
-# 폭락장 단계 정의 (MA20 대비 하락률, 배수) — 깊은 단계가 앞에 오도록 정렬
-CRASH_TIERS = [(47, 2.5), (41, 2.1), (35, 1.95)]
+# 폭락장 단계 정의 (MA43 대비 하락률, 배수) — 깊은 단계가 앞에 오도록 정렬
+CRASH_TIERS = [(45.5, 2.5), (41, 2.1), (35, 1.95)]
  
-def determine_multiplier(close, ma20val, close_20d_ago=None):
+def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None):
     """
     추추무매 매수 로직
  
     0) 최초 매수: 1.0T (별지점 0.5T + 평단매수 0.5T)
-    1-1) MA20 위 + 20일전 종가보다 높음: 1.0T
-    1-2) MA20 위 + 20일전 종가보다 낮음: 0.75T
-    2-1) MA20 아래 + 20일전 종가보다 높음: 0.75T
-    2-2) MA20 아래 + 20일전 종가보다 낮음: 0.75T
+    1-1) MA42 위 + 20일전 종가보다 위: 1.0T
+    1-2) MA42 위 + 20일전 종가보다 아래: 0.76T
+    2-1) MA42 아래 + 20일전 종가보다 위: 0.74T
+    2-2) MA42 아래 + 20일전 종가보다 낮음: 0.76T
  
     폭락장 조건은 위 일반 매수 로직보다 항상 최우선:
-    MA20 대비 -35% 이상  -> 1.95T
-    MA20 대비 -41% 이상  -> 2.10T
-    MA20 대비 -47% 이상  -> 2.50T
+    MA43 대비 -35% 이상  -> 1.95T
+    MA43 대비 -41% 이상  -> 2.10T
+    MA43 대비 -45.5% 이상  -> 2.50T
  
-    ※ 1.0T / 0.75T 는 각각
+    ※ 1.0T / 0.76T / 0.74T / 0.76T 는 각각
        별지점 매수와 평단매수에 절반씩 배분한다.
     ※ 폭락장 배수(1.95T~2.5T)는 절반으로 쪼개지 않고
        해당 단계 가격 1곳에 단독으로 집행한다. (문서 규칙)
  
     반환: (배수, 설명, 폭락장단계 or None)
     """
-    if ma20val is None or close is None:
-        return 1.0, "MA20 데이터 부족 (기본 1.0T)", None
+    if ma42val is None or ma43val is None or close is None:
+        return 1.0, "이동평균 데이터 부족 (기본 1.0T)", None
  
     # ---------------------------------------------------------
     # 폭락장 조건 최우선
     # ---------------------------------------------------------
-    drawdown = (ma20val - close) / ma20val * 100
+    drawdown = (ma43val - close) / ma43val * 100
     for th, mult in CRASH_TIERS:
         if drawdown >= th:
-            return mult, f"MA20 대비 -{th}% 이상 구간 (폭락장 대응)", th
+            return mult, f"MA43 대비 -{th}% 이상 구간 (폭락장 대응)", th
  
     # ---------------------------------------------------------
     # 일반 매수 로직
     # ---------------------------------------------------------
-    above_ma = close >= ma20val
- 
-    # 20일전 종가 데이터가 아직 없으면 일반적으로 상승/하락추세를
-    # 구분할 수 없으므로 기존 기본값 1.0T를 유지한다.
+    above_ma = close >= ma42val
+
+    # 20거래일 전 종가 데이터가 아직 없으면
+    # 기본값 1.0T
     if close_20d_ago is None:
-        return 1.0, "20일전 종가 데이터 부족 (기본 1.0T)", None
- 
+        return 1.0, "20거래일 전 종가 데이터 부족 (기본 1.0T)", None
+
     above_20d_close = close >= close_20d_ago
- 
+
     if above_ma and above_20d_close:
         # 1-1 상승추세: 0.5T 별지점 + 0.5T 평단
-        return 1.0, "MA20 상단 + 20일전 종가 상단 (상승추세)", None
- 
+        return 1.0, "MA42 위 + 20일전 종가 위 (상승추세)", None
+
     if above_ma and not above_20d_close:
-        # 1-2 횡보: 0.375T 별지점 + 0.375T 평단
-        return 0.75, "MA20 상단 + 20일전 종가 하단 (횡보)", None
- 
+        # 1-2 횡보: 0.38T 별지점 + 0.38T 평단
+        return 0.76, "MA42 위 + 20일전 종가 아래 (횡보)", None
+
     if not above_ma and above_20d_close:
-        # 2-1 횡보: 0.375T 별지점 + 0.375T 평단
-        return 0.75, "MA20 하단 + 20일전 종가 상단 (횡보)", None
+        # 2-1 횡보: 0.37T 별지점 + 0.37T 평단
+        return 0.74, "MA42 아래 + 20일전 종가 위 (횡보)", None
+
+    # 2-2 하락추세: 0.38T 별지점 + 0.38T 평단
+    return 0.76, "MA42 아래 + 20일전 종가 아래 (하락추세)", None
  
-    # 2-2 하락추세: 0.375T 별지점 + 0.375T 평단
-    return 0.75, "MA20 하단 + 20일전 종가 하단 (하락추세)", None
- 
-def crash_tier_table(ma20val, base1x):
-    """MA20 대비 추가 하락률(35/41/47%)별 폭락장 매수 단가·수량표 (참고용, 실제 발동은 determine_multiplier가 판단)"""
+def crash_tier_table(ma43val, base1x):
+    """MA43 대비 추가 하락률(35/41/45.5%)별 폭락장 매수 단가·수량표 (참고용, 실제 발동은 determine_multiplier가 판단)"""
     rows = []
-    if ma20val is None or base1x is None:
+    if ma43val is None or base1x is None:
         return rows
     for th, mult in sorted(CRASH_TIERS):
-        price = ma20val * (1 - th / 100)
+        price = ma43val * (1 - th / 100)
         amount = base1x * mult
         qty = (amount / price) if price and price > 0 else None
         rows.append({"tier": th, "mult": mult, "price": price, "amount": amount, "qty": qty})
@@ -613,7 +613,7 @@ def import_trades_from_excel(p, r, uploaded_file):
     Excel 거래내역을 현재 활성 라운드에 다시 재생한다.
  
     Excel 필수 열:
-      날짜 / 구분 / 가격 / 수량
+      날짜 / 구분 / 수량 / 가격 
  
     거래금액 열은 있어도 되고 없어도 된다.
     거래금액은 가격 × 수량으로 다시 계산한다.
@@ -638,23 +638,28 @@ def import_trades_from_excel(p, r, uploaded_file):
             "날짜": "date",
             "date": "date",
             "거래일": "date",
+            "Date": "date",
  
             "구분": "type",
             "유형": "type",
             "type": "type",
+            "Activity Description": "type",
  
             "가격": "price",
             "체결가": "price",
             "체결가격": "price",
             "price": "price",
+            "Price": "price",
  
             "수량": "qty",
             "체결수량": "qty",
             "qty": "qty",
+            "Quantity": "qty",
  
             "거래금액": "amount",
             "금액": "amount",
             "amount": "amount",
+            "Amount": "amount",
         }
  
         renamed = {}
@@ -667,18 +672,18 @@ def import_trades_from_excel(p, r, uploaded_file):
         # -----------------------------
         # 필수 열 확인
         # -----------------------------
-        required = ["date", "type", "price", "qty"]
+        required = ["date", "type", "qty", "price"]
         missing = [c for c in required if c not in df.columns]
  
         if missing:
             raise ValueError(
                 "필수 열이 없습니다: "
                 + ", ".join(missing)
-                + "\n필수 형식: 날짜 / 구분 / 가격 / 수량"
+                + "\n필수 형식: 날짜 / 구분 / 수량 / 가격"
             )
  
         # 빈 행 제거
-        df = df.dropna(subset=["date", "type", "price", "qty"]).copy()
+        df = df.dropna(subset=["date", "type", "qty", "price"]).copy()
  
         if df.empty:
             raise ValueError("Excel에 거래내역이 없습니다.")
@@ -691,7 +696,7 @@ def import_trades_from_excel(p, r, uploaded_file):
         df["price"] = pd.to_numeric(df["price"], errors="coerce")
         df["qty"] = pd.to_numeric(df["qty"], errors="coerce")
  
-        df = df.dropna(subset=["date", "price", "qty"]).copy()
+        df = df.dropna(subset=["date", "qty", "price"]).copy()
  
         # -----------------------------
         # 거래 유형 정리
@@ -700,11 +705,13 @@ def import_trades_from_excel(p, r, uploaded_file):
             "매수": "buy",
             "buy": "buy",
             "매입": "buy",
+            "YOU BOUGHT": "buy",
  
             "쿼터매도": "quarter_sell",
             "쿼터 매도": "quarter_sell",
             "quarter_sell": "quarter_sell",
             "quarter sell": "quarter_sell",
+            "YOU SOLD": "quarter_sell",
         }
  
         df["type_normalized"] = (
@@ -770,7 +777,11 @@ def import_trades_from_excel(p, r, uploaded_file):
             price = float(row["price"])
             qty = float(row["qty"])
             trade_type = row["type_normalized"]
- 
+
+            # YOU SOLD / 쿼터매도 수량은 음수로 들어와도 양수로 처리
+            if trade_type == "quarter_sell":
+                qty = abs(qty)
+
             if price <= 0:
                 raise ValueError(
                     f"{dt}: 가격이 0 이하입니다."
@@ -840,87 +851,155 @@ def compute_guide(p, market=None):
     r = active_round(p)
     if r is None or p["config"] is None:
         return None
- 
+
     cfg = p["config"]
     splits, symbol = cfg["splits"], cfg["symbol"]
- 
+
     # Yahoo Finance 자동 시세
     if market is None:
         market = fetch_yahoo_market(symbol)
- 
+
     close = market.get("price")
-    ma = market.get("ma20")
-    gap_pct = market.get("gap_pct")
- 
+
     # ---------------------------------------------------------
-    # 20일 전 종가 (2-1 규칙에 사용)
-    # history[-1] 이 최신 종가이므로 20거래일 전은 history[-21] 이다.
-    # (기존 history[-20] 은 19거래일 전을 가리키던 오류)
+    # MA42 / MA43 / 20거래일 전 종가
+    # - 화면 표시용
+    # - gap_pct 계산용
+    # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # 최근 완료 일봉
+    # fetch_yahoo_market()에서
+    # 장중에는 오늘 봉을 제외하고,
+    # 장 마감 후에는 오늘 봉까지 포함한다.
     # ---------------------------------------------------------
     hist_rows = market.get("history", [])
-    close_20d_ago = hist_rows[-21]["close"] if len(hist_rows) >= 21 else None
- 
-    mult, tier, crash_tier = determine_multiplier(close, ma, close_20d_ago)
- 
-    # =========================================================
-    # T값: 실제 체결로 누적된 상태값(r["T"])을 그대로 사용한다.
-    # (1회매수 +1 / 절반매수 +0.5 / 쿼터매도시 직전T×0.75 는
-    #  매매기록 입력 시 apply_buy / apply_quarter_sell 에서 이미 반영됨)
-    # =========================================================
-    T = r["T"]
-    current_T = T  # 하위 호환용 별칭 (기존 화면 코드에서 참조)
- 
-    phase = phase_of(T, splits)
- 
-    # 부동소수점 누적오차를 고려한 최초 매수 판정
-    is_first_buy = (r["qty"] <= 1e-9 and abs(T) < 1e-9)
- 
-    # 문서 규칙 "0. 매수시작은 1T로 당일 종가에 매수한다"
-    # -> 최초 매수일에는 20일선 하단으로 인한 0.75T 감축을 적용하지 않고 1.0T로 시작한다.
-    #    (단, 폭락장 대응(1.95T~2.5T)은 모든 로직에 최우선하므로 그대로 유지)
-    if is_first_buy and mult < 1.0:
-        mult = 1.0
-        tier = "최초 매수 (1T 고정)"
- 
-    star_pct = star_percent(symbol, splits, T)
- 
-    star_point = (
-        r["avgCost"] * (1 + star_pct / 100)
-        if r["avgCost"] > 0 else None
-    )
- 
-    buy_trigger = (
-        star_point - 0.01
-        if star_point is not None else None
-    )
- 
-    divisor_remaining = splits - T
- 
-    # =========================================================
-    # 1회 매수액 (문서 공식) = 잔금 ÷ (분할수 − T)
-    # '잔금'은 초기 원금이 아니라 현재 실제 남은 현금(r["cash"])이다.
-    # =========================================================
-    base1x = (
-        r["cash"] / divisor_remaining
-        if divisor_remaining is not None and divisor_remaining > 0
+
+    # ---------------------------------------------------------
+    # MA42 / MA43 계산
+    # 추추무매 실제 매수 판단용
+    # ---------------------------------------------------------
+    ma42val = (
+        sum(x["close"] for x in hist_rows[-42:]) / 42
+        if len(hist_rows) >= 42
         else None
     )
- 
+
+    ma43val = (
+        sum(x["close"] for x in hist_rows[-43:]) / 43
+        if len(hist_rows) >= 43
+        else None
+    )
+
+    ma43_gap_pct = (
+    (close - ma43val) / ma43val * 100
+    if close is not None and ma43val is not None and ma43val > 0
+    else None
+    )
+
+    # ---------------------------------------------------------
+    # 20거래일 전 종가
+    #
+    # 장중:
+    #   history 마지막 = 어제
+    #   오늘 기준 20거래일 전 = history[-20]
+    #
+    # 장 마감 후:
+    #   history 마지막 = 오늘
+    #   오늘 기준 20거래일 전 = history[-21]
+    # ---------------------------------------------------------
+    if market.get("market_open"):
+        close_20d_ago = (
+            hist_rows[-20]["close"]
+            if len(hist_rows) >= 20
+            else None
+        )
+    else:
+        close_20d_ago = (
+            hist_rows[-21]["close"]
+            if len(hist_rows) >= 21
+            else None
+        )
+
+    # ---------------------------------------------------------
+    # 추추무매 매수 배수 계산
+    #
+    # 중요:
+    # close
+    # MA42
+    # MA43
+    # 20거래일 전 종가
+    # 순서대로 정확히 전달
+    # ---------------------------------------------------------
+    mult, reason, crash_tier = determine_multiplier(
+        close,
+        ma42val,
+        ma43val,
+        close_20d_ago
+    )
+
     # =========================================================
-    # 현재 누적 매수금액 = 현재 평단가 × 현재 보유수량 (참고용 표시)
+    # T값
     # =========================================================
+    T = r["T"]
+    current_T = T
+
+    phase = phase_of(T, splits)
+
+    is_first_buy = (
+        r["qty"] <= 1e-9
+        and abs(T) < 1e-9
+    )
+
+    # ---------------------------------------------------------
+    # 최초 매수는 1T
+    # 단, 폭락장 조건은 최우선이므로
+    # 1.95T / 2.10T / 2.50T는 그대로 유지
+    # ---------------------------------------------------------
+    if is_first_buy and mult < 1.0:
+        mult = 1.0
+        reason = "최초 매수 (1T 고정)"
+
+    # ---------------------------------------------------------
+    # 별지점
+    # ---------------------------------------------------------
+    star_pct = star_percent(symbol, splits, T)
+
+    star_point = (
+        r["avgCost"] * (1 + star_pct / 100)
+        if r["avgCost"] > 0
+        else None
+    )
+
+    buy_trigger = (
+        star_point - 0.01
+        if star_point is not None
+        else None
+    )
+
+    divisor_remaining = splits - T
+
+    # ---------------------------------------------------------
+    # 1회 매수액
+    # 잔금 ÷ (분할수 - T)
+    # ---------------------------------------------------------
+    base1x = (
+        r["cash"] / divisor_remaining
+        if divisor_remaining > 0
+        else None
+    )
+
     cumulative_buy_amount = (
         r["avgCost"] * r["qty"]
-        if r["qty"] > 0 else 0.0
+        if r["qty"] > 0
+        else 0.0
     )
- 
-    # 오늘 적용 배수를 적용한 매수 목표금액
+
     target_amount = (
         base1x * mult
-        if base1x is not None else None
+        if base1x is not None
+        else None
     )
- 
-    # 오늘 종가 기준 참고용 매수 수량 (목표금액 전액을 종가로 매수한다고 가정)
+
     buy_qty = (
         target_amount / close
         if target_amount is not None
@@ -928,68 +1007,76 @@ def compute_guide(p, market=None):
         and close > 0
         else None
     )
- 
+
     # ---------------------------------------------------------
-    # 폭락장 대응이 발동된 경우: 해당 단계 1개만 단독 집행한다.
-    # 평단매수/별지점매수로 절반씩 쪼개지 않는다. (문서 규칙)
+    # 폭락장 가격
+    # 반드시 MA43 기준
     # ---------------------------------------------------------
     crash_price = None
     crash_qty = None
-    if crash_tier is not None and ma is not None:
-        crash_price = ma * (1 - crash_tier / 100)
+
+    if crash_tier is not None and ma43val is not None:
+        crash_price = ma43val * (1 - crash_tier / 100)
+
         if target_amount is not None and crash_price > 0:
             crash_qty = target_amount / crash_price
- 
+
     s_pct = sell_profit_pct(symbol)
- 
+
     sell_target = (
         r["avgCost"] * (1 + s_pct / 100)
-        if r["avgCost"] > 0 else None
+        if r["avgCost"] > 0
+        else None
     )
- 
+
     quarter_qty = r["qty"] / 4
- 
-    # 문서 규칙: "20%수익시 지정가 전량익절"
-    # 지정가 20% 매도는 장중 최우선 주문이며 항상 '전량'이다.
-    # (기존: 보유수량 - 쿼터매도수량 으로 3/4만 표시 → 사이클이 종료되지 않던 오류)
+
     final_sell_qty = r["qty"]
- 
+
     return dict(
-        round=r,
-        close=close,
-        ma=ma,
-        gap_pct=gap_pct,
-        mult=mult,
-        tier=tier,
-        crash_tier=crash_tier,
-        crash_price=crash_price,
-        crash_qty=crash_qty,
- 
-        # 현재 T는 실제 체결 기반 r["T"] 하나만 사용
-        phase=phase,
-        current_T=current_T,
- 
-        star_pct=star_pct,
-        star_point=star_point,
-        buy_trigger=buy_trigger,
- 
-        base1x=base1x,
-        target_amount=target_amount,
-        cumulative_buy_amount=cumulative_buy_amount,
- 
-        buy_qty=buy_qty,
-        one_time_buy_amount=base1x,
- 
-        sell_target=sell_target,
-        s_pct=s_pct,
-        quarter_qty=quarter_qty,
-        final_sell_qty=final_sell_qty,
-        remainder_qty=final_sell_qty,  # 하위 호환용 별칭
-        is_first_buy=is_first_buy,
-        divisor_remaining=divisor_remaining,
-        market=market,
-    )
- 
+    round=r,
+
+    close=close,
+
+    # MA42 / MA43 / 20거래일 전 종가
+    ma42=ma42val,
+    ma43=ma43val,
+    close_20d_ago=close_20d_ago,
+
+    # MA43 대비 괴리율
+    gap_pct=ma43_gap_pct,
+
+    mult=mult,
+    tier=reason,
+    crash_tier=crash_tier,
+    crash_price=crash_price,
+    crash_qty=crash_qty,
+
+    phase=phase,
+    current_T=current_T,
+
+    star_pct=star_pct,
+    star_point=star_point,
+    buy_trigger=buy_trigger,
+
+    base1x=base1x,
+    target_amount=target_amount,
+    cumulative_buy_amount=cumulative_buy_amount,
+
+    buy_qty=buy_qty,
+    one_time_buy_amount=base1x,
+
+    sell_target=sell_target,
+    s_pct=s_pct,
+    quarter_qty=quarter_qty,
+    final_sell_qty=final_sell_qty,
+    remainder_qty=final_sell_qty,
+
+    is_first_buy=is_first_buy,
+    divisor_remaining=divisor_remaining,
+
+    market=market,
+)
 # =============================================================================
 # 포맷 헬퍼
 # =============================================================================
@@ -1054,6 +1141,24 @@ h1,h2,h3,h4,p,span,div,label { font-family: -apple-system, "Malgun Gothic", sans
 .tag.profit { background: rgba(245,159,0,0.15); color: var(--profit); }
 .tag.loss { background: rgba(240,62,62,0.15); color: var(--loss); }
 .tag.dim { background: var(--surface2); color: var(--text-dim); }
+
+.tag.market-up {
+  background: rgba(154,205,50,0.15);
+  color: #00A651;
+  border: 1px solid #9ACD32;
+}
+
+.tag.market-down {
+  background: rgba(255,152,0,0.15);
+  color: #F03E3E;
+  border: 1px solid #FF9800;
+}
+
+.tag.market-blue {
+  background: rgba(135,206,235,0.15);
+  color: #2196F3;
+  border: 1px solid #87CEEB;
+}
  
 .kv-label { font-size: 12px; color: var(--text-dim); font-weight: 500; }
 .kv-value { font-family: ui-monospace, monospace; font-size: 16px; color: var(--text); margin-top: 2px; margin-bottom: 10px; font-weight: 600; }
@@ -1478,19 +1583,67 @@ tab_guide, tab_market, tab_trade, tab_history, tab_settings = st.tabs(
 with tab_guide:
     g = guide
     st.markdown('<div class="card">', unsafe_allow_html=True)
+    # 시세 상태별 색상
+    tier = g["tier"]
+
+    if "MA42 위 + 20일전 종가 위" in tier:
+        market_tag_class = "market-up"
+    elif "MA42 위 + 20일전 종가 아래" in tier:
+        market_tag_class = "market-down"
+    elif "MA42 아래 + 20일전 종가 위" in tier:
+        market_tag_class = "market-down"
+    elif "MA42 아래 + 20일전 종가 아래" in tier:
+        market_tag_class = "market-blue"
+    else:
+        # 폭락장 등 기존 색상 유지
+        market_tag_class = (
+            "loss" if g["mult"] >= 2
+            else "buy" if g["mult"] < 1
+            else "dim"
+        )
+
     st.markdown(
-        f'<div class="card-title">시세 상태 <span class="tag {"loss" if g["mult"]>=2 else "buy" if g["mult"]<1 else "dim"}">{g["tier"]}</span></div>',
+        f'<div class="card-title">시세 상태 '
+        f'<span class="tag {market_tag_class}">{g["tier"]}</span></div>',
         unsafe_allow_html=True,
     )
-    cc1, cc2, cc3, cc4 = st.columns(4)
+    cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+
     with cc1:
-        kv("현재 Yahoo 가격", money(g["close"]) if g["close"] is not None else "가격 확인 실패")
+        kv(
+            "현재 Yahoo 가격",
+            money(g["close"]) if g["close"] is not None else "가격 확인 실패"
+        )
+
     with cc2:
-        kv("MA20", money(g["ma"]) if g["ma"] is not None else f"데이터 {len(current_p['price_history'])}/20")
+        kv(
+            "MA42",
+            money(g["ma42"])
+            if g["ma42"] is not None
+            else f"데이터 {len(current_p['price_history'])}/42"
+        )
+
     with cc3:
-        kv("MA20 대비 괴리율", pct(g["gap_pct"]))
+        kv(
+            "MA43",
+            money(g["ma43"])
+            if g["ma43"] is not None
+            else f"데이터 {len(current_p['price_history'])}/43"
+        )
+
     with cc4:
-        kv("오늘 적용 배수", f'{g["mult"]:.2f}T', color="var(--accent)")
+        kv(
+            "MA43 대비 괴리율",
+            pct(g["gap_pct"])
+        )
+
+    with cc5:
+        kv(
+            "오늘 적용 배수",
+            f'{g["mult"]:.2f}T',
+            color="var(--accent)"
+        )
+
     st.markdown("</div>", unsafe_allow_html=True)
  
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -1534,7 +1687,7 @@ with tab_guide:
         )
         st.markdown(
             f'<div class="kv-value" style="font-size:17px; margin-top:8px; line-height:1.9;">'
-            f'<span style="font-size:9pt; color:#000000; font-weight:bold;">MA20 대비 -{g["crash_tier"]}% 단독 매수</span> '
+            f'<span style="font-size:9pt; color:#000000; font-weight:bold;">MA43 대비 -{g["crash_tier"]}% 단독 매수</span> '
             f'<span style="font-size:15pt;color:#F03E3E;">{money(g["crash_price"])} × {shares_fmt(g["crash_qty"])}</span>'
             f'<br><span style="font-size:9pt; color:var(--text-faint); font-weight:bold;">'
             f'목표금액 {money(g["target_amount"])} (1T {money(g["base1x"])} × {g["mult"]:.2f})</span>'
@@ -1566,10 +1719,10 @@ with tab_guide:
         st.markdown("</div>", unsafe_allow_html=True)
     else:
         # 문서 규칙: 목표금액을 항상 절반씩 나눠 "평단가"와 "★지점(별지점)"에 각각 매수한다.
-        # (20일선 위=1.0T, 아래=0.75T 로 목표금액 자체가 달라질 뿐, 절반씩 나누는 방식은 동일)
+        # (20일선 위=1.0T, 아래=0.76T , 0.74T , 0.76T 로 목표금액 자체가 달라질 뿐, 절반씩 나누는 방식은 동일)
         half_amount = g["target_amount"] / 2 if g["target_amount"] is not None else None
-        crash_rows = crash_tier_table(g["ma"], g["base1x"])
- 
+        crash_rows = crash_tier_table(g["ma43"], g["base1x"])
+
         qty_avgcost = (
             half_amount / r["avgCost"]
             if half_amount is not None and r["avgCost"] > 0
@@ -1662,13 +1815,21 @@ with tab_market:
         unsafe_allow_html=True,
     )
  
-    cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+    cc1, cc2, cc3, cc4, cc5, cc6 = st.columns(6)
     with cc1:
         kv("현재 가격", money(m["price"]))
     with cc2:
-        kv("MA20", money(m["ma20"]) if m["ma20"] is not None else "데이터 부족")
+        kv(
+            "MA43",
+            money(guide["ma43"])
+            if guide and guide["ma43"] is not None
+            else "데이터 부족"
+        )
     with cc3:
-        kv("MA20 괴리율", pct(m["gap_pct"]))
+        kv(
+            "MA43 괴리율",
+            pct(guide["gap_pct"]) if guide else "데이터 부족"
+        )
     with cc4:
         kv("적용 배수", f'{guide["mult"]:.2f}T' if guide else "—")
     with cc5:
@@ -1975,7 +2136,30 @@ with tab_history:
                             "평단": round(t["avgAfter"], 2),
                             "손익": (round(t["pnl"], 2) if t["pnl"] is not None else "—"),
                         })
-                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    display_df = pd.DataFrame(rows)
+
+                    # 화면 표시 순서만 최신 날짜 → 과거 날짜
+                    display_df["_date_sort"] = pd.to_datetime(
+                        display_df["날짜"],
+                        errors="coerce"
+                    )
+
+                    display_df = (
+                        display_df
+                        .sort_values(
+                            "_date_sort",
+                            ascending=False,
+                            kind="stable"
+                        )
+                        .drop(columns="_date_sort")
+                        .reset_index(drop=True)
+                    )
+
+                    st.dataframe(
+                        display_df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
  
                     # 거래 기록 삭제 UI (진행 중인 라운드는 개별 수정 가능)
                     if rr["status"] == "active":
