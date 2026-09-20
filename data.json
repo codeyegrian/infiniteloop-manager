@@ -5,7 +5,7 @@
       "name": "본계좌 soxl",
       "config": {
         "symbol": "SOXL",
-        "splits": 40,
+        "splits": 20,
         "capital": 50000.0,
         "compounding": true
       },
