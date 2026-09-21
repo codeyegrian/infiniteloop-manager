@@ -15,8 +15,8 @@
           "id": 1,
           "startDate": "2026-08-15",
           "startCapital": 20000.0,
-          "cash": 12984.3935335237,
-          "qty": 57.0,
+          "cash": 21082.3835335237,
+          "qty": 0.0,
           "avgCost": 119.1608767364855,
           "T": 6.832583439652743,
           "trades": [
@@ -448,14 +448,41 @@
               "avgAfter": 119.1608767364855,
               "cashAfter": 12984.3935335237,
               "pnl": 108.47808158786256
+            },
+            {
+              "id": 34,
+              "date": "2026-09-21",
+              "type": "final_sell",
+              "price": 142.07,
+              "qty": 57.0,
+              "amount": 8097.99,
+              "tDelta": 0,
+              "tAfter": 6.832583439652743,
+              "avgAfter": 119.1608767364855,
+              "cashAfter": 21082.3835335237,
+              "pnl": 1305.8200260203257
             }
           ],
-          "status": "active",
+          "status": "closed",
           "seedCash": 9842.9393,
           "reservedProfit": 0.0,
           "sameDayReentry": false,
           "reverseStartedDate": null,
-          "reverseFirstSellDone": false
+          "reverseFirstSellDone": false,
+          "closedDate": "2026-09-21",
+          "realizedPnl": 1203.0942999999984,
+          "finalCapital": 21203.094300000004
+        },
+        {
+          "id": 2,
+          "startDate": "2026-09-21",
+          "startCapital": 21203.094300000004,
+          "cash": 21203.094300000004,
+          "qty": 0.0,
+          "avgCost": 0.0,
+          "T": 0.0,
+          "trades": [],
+          "status": "active"
         }
       ]
     },
