@@ -6,7 +6,7 @@
       "config": {
         "symbol": "SOXL",
         "splits": 20,
-        "capital": 21203.09,
+        "capital": 20000.0,
         "compounding": true
       },
       "price_history": [],
@@ -477,25 +477,11 @@
           "id": 2,
           "startDate": "2026-09-21",
           "startCapital": 21203.094300000004,
-          "cash": 20367.444300000003,
-          "qty": 5.0,
-          "avgCost": 167.13,
-          "T": 0.7882,
-          "trades": [
-            {
-              "id": 1,
-              "date": "2026-09-22",
-              "type": "buy",
-              "price": 167.13,
-              "qty": 5.0,
-              "amount": 835.65,
-              "tDelta": 0.7882,
-              "tAfter": 0.7882,
-              "avgAfter": 167.13,
-              "cashAfter": 20367.444300000003,
-              "pnl": null
-            }
-          ],
+          "cash": 21203.094300000004,
+          "qty": 0.0,
+          "avgCost": 0.0,
+          "T": 0.0,
+          "trades": [],
           "status": "active"
         }
       ]
@@ -1544,15 +1530,29 @@
           "id": 2,
           "startDate": "2026-09-21",
           "startCapital": 82218.69190000002,
-          "cash": 82218.69190000002,
-          "qty": 0.0,
-          "avgCost": 0.0,
-          "T": 0.0,
-          "trades": [],
+          "cash": 80547.39190000002,
+          "qty": 10.0,
+          "avgCost": 167.13,
+          "T": 0.4065,
+          "trades": [
+            {
+              "id": 1,
+              "date": "2026-09-22",
+              "type": "buy",
+              "price": 167.13,
+              "qty": 10.0,
+              "amount": 1671.3,
+              "tDelta": 0.4065,
+              "tAfter": 0.4065,
+              "avgAfter": 167.13,
+              "cashAfter": 80547.39190000002,
+              "pnl": null
+            }
+          ],
           "status": "active"
         }
       ]
     }
   ],
-  "active_portfolio_id": 2
+  "active_portfolio_id": 4
 }
