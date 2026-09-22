@@ -477,11 +477,25 @@
           "id": 2,
           "startDate": "2026-09-21",
           "startCapital": 21203.094300000004,
-          "cash": 21203.094300000004,
-          "qty": 0.0,
-          "avgCost": 0.0,
-          "T": 0.0,
-          "trades": [],
+          "cash": 20443.544300000005,
+          "qty": 5.0,
+          "avgCost": 151.91,
+          "T": 0.7165,
+          "trades": [
+            {
+              "id": 1,
+              "date": "2026-09-22",
+              "type": "buy",
+              "price": 151.91,
+              "qty": 5.0,
+              "amount": 759.55,
+              "tDelta": 0.7165,
+              "tAfter": 0.7165,
+              "avgAfter": 151.91,
+              "cashAfter": 20443.544300000005,
+              "pnl": null
+            }
+          ],
           "status": "active"
         }
       ]
