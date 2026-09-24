@@ -1,5 +1,5 @@
 """
-추추무매v3.0
+추추무매v3.2
 Streamlit 앱 — app.py
  
 실행: streamlit run app.py
@@ -41,6 +41,61 @@ Streamlit 앱 — app.py
 20. 콕핏에 '총자산'(잔금 + 평가금액 + 미편입 실현수익) 표시 추가 — 증권사 잔고 대조용
 21. GitHub 토큰 미설정 시 로컬 파일 저장은 휘발성이므로 사이드바에 경고 표시
 ------------------------------------------------------------------------------
+3.0
+일반매수 기 이평선 병경, 폭락장매수 기준이평선 변경, 일반매수 비중변경
+MA_PERIOD = 42
+DEEP_MA_PERIOD = 43
+# 1. 종가 > MA42 AND 종가 > 20거래일 전 종가   1
+# 2. 종가 > MA42 AND 종가 < 20거래일 전 종가  0.7675
+# 3. 종가 < MA42 AND 종가 > 20거래일 전 종가  0.7475
+# 4. 종가 < MA42 AND 종가 < 20거래일 전 종가  0.7875
+-----------------------------------------------------------------------------
+3.1 (2026-09-019)
+수익률변경 및 일반매수 비중변경
+
+# 1. 종가 > MA42 AND 종가 > 20거래일 전 종가   1
+# 2. 종가 > MA42 AND 종가 < 20거래일 전 종가  0.77
+# 3. 종가 < MA42 AND 종가 > 20거래일 전 종가  0.7525
+# 4. 종가 < MA42 AND 종가 < 20거래일 전 종가  0.765
+
+수익률 13.4% 에서 지정가 -0.2% 트레일링 매도 
+-----------------------------------------------------------------------------
+3.2
+backtest에서 수익금이 두번 편입되는 오류 수정
+20분할로 변경, 일일매도 비율 변경, 수익률 13.4% 에서 20%로 변경
+
+# 1. 종가 > MA42 AND 종가 > 20거래일 전 종가   1
+# 2. 종가 > MA42 AND 종가 < 20거래일 전 종가  0.7675
+# 3. 종가 < MA42 AND 종가 > 20거래일 전 종가  0.7475
+# 4. 종가 < MA42 AND 종가 < 20거래일 전 종가  0.7875
+
+수익률 20% 에서 지정가 -0.25% 트레일링 매도 
+------------------------------------------------------------------------------------
+에이든-추추무매 v3.2
+MA_PERIOD = 42
+DEEP_MA_PERIOD = 43
+
+BUY_MULT_1 = 1.4976
+BUY_MULT_2 = 0.7356
+BUY_MULT_3 = 0.6831
+BUY_MULT_4 = 1.0003
+
+# 1. 종가 > MA42 AND 종가 > 20거래일 전 종가 
+# 2. 종가 > MA42 AND 종가 < 20거래일 전 종가 
+# 3. 종가 < MA42 AND 종가 > 20거래일 전 종가 
+# 4. 종가 < MA42 AND 종가 < 20거래일 전 종가 
+
+DEEP_35_PCT = -35.0
+DEEP_35_T = 1.95
+
+DEEP_41_PCT = -37.0
+DEEP_41_T = 2.10
+
+DEEP_45_5_PCT = -41
+DEEP_45_5_T = 2.50
+
+PROFIT_TARGET = 1.2
+
 """
  
 import json
@@ -210,24 +265,24 @@ def ma42(history):
     return sum(p["close"] for p in last42) / 42
  
 # 폭락장 단계 정의 (MA43 대비 하락률, 배수) — 깊은 단계가 앞에 오도록 정렬
-CRASH_TIERS = [(45.5, 2.5), (41, 2.1), (35, 1.95)]
+CRASH_TIERS = [(41, 2.5), (37, 2.1), (35, 1.95)]
  
 def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None):
     """
     추추무매 매수 로직
  
     0) 최초 매수: 1.0T (별지점 0.5T + 평단매수 0.5T)
-    1-1) MA42 위 + 20일전 종가보다 위: 1.0T
-    1-2) MA42 위 + 20일전 종가보다 아래: 0.76T
-    2-1) MA42 아래 + 20일전 종가보다 위: 0.74T
-    2-2) MA42 아래 + 20일전 종가보다 낮음: 0.76T
+    1-1) MA42 위 + 20일전 종가보다 위: 1.4976T
+    1-2) MA42 위 + 20일전 종가보다 아래: 0.7356T
+    2-1) MA42 아래 + 20일전 종가보다 위: 0.6831T
+    2-2) MA42 아래 + 20일전 종가보다 낮음: 1.003T
  
     폭락장 조건은 위 일반 매수 로직보다 항상 최우선:
     MA43 대비 -35% 이상  -> 1.95T
-    MA43 대비 -41% 이상  -> 2.10T
-    MA43 대비 -45.5% 이상  -> 2.50T
+    MA43 대비 -37% 이상  -> 2.10T
+    MA43 대비 -41% 이상  -> 2.50T
  
-    ※ 1.0T / 0.76T / 0.74T / 0.76T 는 각각
+    ※ 1.0T / 0.7356T / 0.6831T / 1.003T 는 각각
        별지점 매수와 평단매수에 절반씩 배분한다.
     ※ 폭락장 배수(1.95T~2.5T)는 절반으로 쪼개지 않고
        해당 단계 가격 1곳에 단독으로 집행한다. (문서 규칙)
@@ -258,22 +313,22 @@ def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None):
     above_20d_close = close >= close_20d_ago
 
     if above_ma and above_20d_close:
-        # 1-1 상승추세: 0.5T 별지점 + 0.5T 평단
-        return 1.0, "MA42 위 + 20일전 종가 위 (상승추세)", None
+        # 1-1 상승추세: 0.7488T 별지점 + 0.7488T 평단
+        return 1.4976, "MA42 위 + 20일전 종가 위 (상승추세)", None
 
     if above_ma and not above_20d_close:
-        # 1-2 횡보: 0.38T 별지점 + 0.38T 평단
-        return 0.76, "MA42 위 + 20일전 종가 아래 (횡보)", None
+        # 1-2 횡보: 0.3678T 별지점 + 0.3678T 평단
+        return 0.7356, "MA42 위 + 20일전 종가 아래 (횡보)", None
 
     if not above_ma and above_20d_close:
-        # 2-1 횡보: 0.37T 별지점 + 0.37T 평단
-        return 0.74, "MA42 아래 + 20일전 종가 위 (횡보)", None
+        # 2-1 횡보: 0.34155T 별지점 + 0.34155T 평단
+        return 0.6831, "MA42 아래 + 20일전 종가 위 (횡보)", None
 
-    # 2-2 하락추세: 0.38T 별지점 + 0.38T 평단
-    return 0.76, "MA42 아래 + 20일전 종가 아래 (하락추세)", None
+    # 2-2 하락추세: 0.50015T 별지점 + 0.50015T 평단
+    return 1.0003, "MA42 아래 + 20일전 종가 아래 (하락추세)", None
  
 def crash_tier_table(ma43val, base1x):
-    """MA43 대비 추가 하락률(35/41/45.5%)별 폭락장 매수 단가·수량표 (참고용, 실제 발동은 determine_multiplier가 판단)"""
+    """MA43 대비 추가 하락률(35/37/41%)별 폭락장 매수 단가·수량표 (참고용, 실제 발동은 determine_multiplier가 판단)"""
     rows = []
     if ma43val is None or base1x is None:
         return rows
@@ -497,11 +552,10 @@ def apply_buy(r, dt, price, qty, t_delta):
 def apply_quarter_sell(r, dt, price, qty):
     """
     문서 규칙:
-    - 쿼터매도 매도주식의 원가 = 현재 평단가 × 매도주식수
+    - 쿼터매도  *직전T × (1 - 매도수량/보유수량) * 실제 주식매도 비율로 T값을 낮춤
     - 익절매도(매도가 >= 평단가): 매도대금 중 '원가' 부분만 잔금에 편입,
       초과분(수익)은 잔금에 넣지 않고 실현손익으로만 기록한다.
     - 손절매도(매도가 < 평단가): 실제 매도대금 전액을 잔금에 편입한다.
-    - T값: 실제 매도비율을 반영한다.
       T_after = 직전T × (1 - 매도주식수 / 매도 전 보유주식수)
       정확히 25% 매도한 경우 직전T × 0.75 와 동일한 값이 되고,
       정수 내림 등으로 25%에서 조금 벗어나도 실제 체결 비율을 그대로 반영한다.
@@ -846,7 +900,53 @@ def import_trades_from_excel(p, r, uploaded_file):
     except Exception as e:
         return False, str(e)
  
- 
+
+def determine_buy_action(current_price, avg_cost, star_point):
+    """
+    현재가 / 평단가 / ★지점의 위치를 비교하여
+    매수 방법을 자동 결정한다.
+
+    1) 현재가 > 평단 < ★
+       → 평단 + ★ 매수
+
+    2) 현재가 < 평단 < ★
+       → ★ 매수만
+
+    3) 현재가 > 평단 > ★
+       → 평단 매수만
+
+    4) 현재가 < 평단 > ★
+       → 매수하지 않음
+    """
+
+    if (
+        current_price is None
+        or avg_cost is None
+        or star_point is None
+        or current_price <= 0
+        or avg_cost <= 0
+        or star_point <= 0
+    ):
+        return "계산 불가"
+
+    # 1. 현재가 > 평단 < ★
+    if current_price > avg_cost and avg_cost < star_point:
+        return " 매수를 하지마세요"
+
+    # 2. 현재가 < 평단 < ★
+    if current_price < avg_cost and avg_cost < star_point:
+        return "평단 매수만 하세요"
+
+    # 3. 현재가 > 평단 > ★
+    if current_price > avg_cost and avg_cost > star_point:
+        return "★지점 매수만 하세요"
+
+    # 4. 현재가 < 평단 > ★
+    if current_price < avg_cost and avg_cost > star_point:
+        return "평단, ★지점 매수 하세요"
+
+    return "계산 불가"
+
 def compute_guide(p, market=None):
     r = active_round(p)
     if r is None or p["config"] is None:
@@ -975,6 +1075,14 @@ def compute_guide(p, market=None):
         if star_point is not None
         else None
     )
+    # =========================================================
+    # 현재가 / 평단 / ★지점 자동 매수 판단
+    # =========================================================
+    buy_action = determine_buy_action(
+        close,
+        r["avgCost"],
+        star_point,
+    )
 
     divisor_remaining = splits - T
 
@@ -1058,6 +1166,7 @@ def compute_guide(p, market=None):
     star_pct=star_pct,
     star_point=star_point,
     buy_trigger=buy_trigger,
+    buy_action=buy_action,
 
     base1x=base1x,
     target_amount=target_amount,
@@ -1282,8 +1391,8 @@ if active_id is not None:
 # 1. 포트폴리오 대시보드 메인 화면 (active_portfolio_id 가 None 일 때)
 # =============================================================================
 if active_id is None:
-    st.title("📊 추추매매 포트폴리오")
-    st.caption("현재 진행 중인 추추매매 포트폴리오를 관리하고 추적하세요.")
+    st.title("📊 추추무매 포트폴리오")
+    st.caption("현재 진행 중인 추추무매 포트폴리오를 관리하고 추적하세요.")
  
     # 1. 포트폴리오 목록 카드 뷰
     if portfolios:
@@ -1381,7 +1490,7 @@ if active_id is None:
                             st.markdown(
                                 f'<div class="note warn"><b>🚨 폭락장 대응 (-{g["crash_tier"]}% · {g["mult"]:.2f}T)</b><br>'
                                 f'<span style="margin-left:20px;">{money(g["crash_price"])} × {shares_fmt(g["crash_qty"])} 단독 매수</span><br>'
-                                f'<b>🔴 매도20%:</b> {money(g["sell_target"])} × {shares_fmt(g["final_sell_qty"])}</div>',
+                                f'<b>🔴 매도 20%:</b> {money(g["sell_target"])} × {shares_fmt(g["final_sell_qty"])}</div>',
                                 unsafe_allow_html=True,
                             )
                         elif g and g["buy_trigger"]:
@@ -1390,7 +1499,7 @@ if active_id is None:
                                 f'<span style="margin-left:40px;"> {money(g["buy_trigger"])}이하 × {shares_fmt(g["buy_qty"])} <br>'
                                 f'<b>🟡 매도LOC <span class="tag buy">★ {pct(g["star_pct"])}</span></b><br>'
                                 f'<span style="margin-left:40px;">{money(g["star_point"])} × {shares_fmt(g["quarter_qty"])}<br>'
-                                f'<b>🔴 매도20%:</b> {money(g["sell_target"])} × {shares_fmt(g["final_sell_qty"])}</div>',
+                                f'<b>🔴 매도 20%:</b> {money(g["sell_target"])} × {shares_fmt(g["final_sell_qty"])}</div>',
                                 unsafe_allow_html=True,
                             )
                     else:
@@ -1674,6 +1783,7 @@ with tab_guide:
             소진모드(리버스모드) 매수/매도는 별도 기준으로 직접 판단해 주세요.</div></div>""",
             unsafe_allow_html=True,
         )
+
     elif g["crash_tier"] is not None:
         # -----------------------------------------------------------------
         # 폭락장 대응: 문서 규칙상 가장 깊은 단계 1개만 단독 실행하고,
@@ -1719,7 +1829,7 @@ with tab_guide:
         st.markdown("</div>", unsafe_allow_html=True)
     else:
         # 문서 규칙: 목표금액을 항상 절반씩 나눠 "평단가"와 "★지점(별지점)"에 각각 매수한다.
-        # (20일선 위=1.0T, 아래=0.76T , 0.74T , 0.76T 로 목표금액 자체가 달라질 뿐, 절반씩 나누는 방식은 동일)
+        # (20일선 위=1.0T, 아래=0.7675T , 0.7475T , 0.7875T 로 목표금액 자체가 달라질 뿐, 절반씩 나누는 방식은 동일)
         half_amount = g["target_amount"] / 2 if g["target_amount"] is not None else None
         crash_rows = crash_tier_table(g["ma43"], g["base1x"])
 
@@ -1741,6 +1851,26 @@ with tab_guide:
             f'<span class="tag dim">{g["phase"]} · {g["mult"]:.3f}T</span></div>',
             unsafe_allow_html=True,
         )
+        
+        st.markdown(
+            f"""
+            <div style="
+                padding: 12px 12px;
+                margin: 10px 0 12px 0;
+                border-radius: 10px;
+                border: 1px solid rgba(128,128,128,0.25);
+                font-size: 18px;
+                font-weight: 700;
+            ">
+                📌 <span style="font-size: 13px;">
+                    {g["buy_action"]}
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        
+
  
         st.markdown(
             f'<div class="kv-value" style="font-size:17px; margin-top:8px; line-height:1.9;">'
@@ -1769,7 +1899,7 @@ with tab_guide:
  
         st.markdown(
             f'<div class="note">오늘 목표매수금액 {money(g["target_amount"])} 을 절반씩 나누어 '
-            f'평단가 {money(r["avgCost"])} 와 매수기준가(★지점) {money(g["buy_trigger"])} 에 동시에 LOC 매수합니다. '
+            f'평단가 {money(r["avgCost"])} 와 매수기준가(★지점) {money(g["buy_trigger"])} 에 동시에 LOC 매수합니다. <br>'
             f'급락 대비 그 아래로도 분할 LOC 매수 추가를 권장합니다.</div>',
             unsafe_allow_html=True,
         )
@@ -1788,7 +1918,7 @@ with tab_guide:
             unsafe_allow_html=True,
         )
         st.markdown(
-            f'<div class="kv-label" style="margin-top:6px;font-weight:bold;">지정가 전량익절 +{g["s_pct"]}% (장중 최우선)</div>',
+            f'<div class="kv-label" style="margin-top:6px;font-weight:bold;">Limit Sell all Trailing Stop +{g["s_pct"]}% -0.5%</div>',
             unsafe_allow_html=True,
         )
         st.markdown(
@@ -1798,8 +1928,7 @@ with tab_guide:
         )
         st.markdown(
             f'<div class="note">지정가 +{g["s_pct"]}% 익절은 <b>전량</b>이며 장중 매도 최우선입니다. 체결되면 사이클이 종료됩니다.<br>'
-            f'쿼터매도는 별지점에 종가(LOC)로 걸어둡니다. '
-            f'쿼터매도가 익절(★지점 ≥ 평단)일 경우 매도대금 중 원가(평단×수량)만 잔금에 편입되고 초과분은 실현손익으로 별도 기록됩니다.<br>'
+            f'쿼터매도는 별지점에 종가(LOC)로 걸어둡니다.<br>'
             f'※ 두 주문은 시점(장중 지정가 / 종가 LOC)이 다르므로, 증권사에서 주문 가능 수량이 겹치면 지정가 전량익절을 우선하세요.</div>',
             unsafe_allow_html=True,
         )
@@ -2057,7 +2186,103 @@ with tab_history:
         else:
             st.caption("표시할 데이터가 부족합니다 (현재 라운드 거래 기록 또는 시세 데이터 필요).")
         st.markdown("</div>", unsafe_allow_html=True)
- 
+        st.markdown("#### 라운드별 상세 기록")
+        st.caption("완료된 라운드를 포함해 모든 라운드 기록을 아래에서 펼쳐볼 수 있습니다.")
+         
+        for rr in reversed(current_p["rounds"]):
+                    if rr["status"] == "active":
+                        status_html = '<span class="tag dim">진행중</span>'
+                    else:
+                        pnl = rr.get("realizedPnl", 0)
+                        status_html = f'<span class="tag {"profit" if pnl>=0 else "loss"}">{"수익" if pnl>=0 else "손절"} {money(pnl)}</span>'
+                    period = rr["startDate"] + (f' ~ {rr["closedDate"]}' if rr.get("closedDate") else "")
+                    expander_label = f'Round #{rr["id"]}  ·  {period}  ·  {"진행중" if rr["status"]=="active" else ("수익 " + money(rr.get("realizedPnl", 0)) if rr.get("realizedPnl", 0) >= 0 else "손절 " + money(rr.get("realizedPnl", 0)))}'
+         
+                    with st.expander(expander_label, expanded=(rr["status"] == "active")):
+                        st.markdown('<div class="round-block">', unsafe_allow_html=True)
+                        st.markdown(
+                            f'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">'
+                            f'<div><b>Round #{rr["id"]}</b> <span style="color:var(--text-faint); font-size:12px;">{period}</span></div>'
+                            f'<div>{status_html}</div></div>',
+                            unsafe_allow_html=True,
+                        )
+                        if rr.get("finalCapital") is not None:
+                            st.caption(
+                                f"라운드 종료 시 다음 라운드로 이월된 금액(잔금+미편입 쿼터매도 익절 초과분): {money(rr['finalCapital'])}"
+                            )
+                        if rr["trades"]:
+                            rows = []
+                            type_label = {"buy": "매수", "quarter_sell": "쿼터매도", "final_sell": "지정가매도"}
+                            for idx, t in enumerate(rr["trades"]):
+                                rows.append({
+                                    "ID": t.get("id", idx + 1),
+                                    "날짜": t["date"],
+                                    "유형": type_label[t["type"]],
+                                    "가격": round(t["price"], 2),
+                                    "수량": round(t["qty"], 4),
+                                    "금액": round(t["amount"], 2),
+                                    "T": round(t["tAfter"], 3),
+                                    "평단": round(t["avgAfter"], 2),
+                                    "손익": (round(t["pnl"], 2) if t["pnl"] is not None else "—"),
+                                })
+                            display_df = pd.DataFrame(rows)
+        
+                            # 화면 표시 순서만 최신 날짜 → 과거 날짜
+                            display_df["_date_sort"] = pd.to_datetime(
+                                display_df["날짜"],
+                                errors="coerce"
+                            )
+        
+                            display_df = (
+                                display_df
+                                .sort_values(
+                                    "_date_sort",
+                                    ascending=False,
+                                    kind="stable"
+                                )
+                                .drop(columns="_date_sort")
+                                .reset_index(drop=True)
+                            )
+        
+                            st.dataframe(
+                                display_df,
+                                use_container_width=True,
+                                hide_index=True
+                            )
+         
+                            # 거래 기록 삭제 UI (진행 중인 라운드는 개별 수정 가능)
+                            if rr["status"] == "active":
+                                st.markdown("---")
+                                del_col1, del_col2 = st.columns([3, 1])
+                                with del_col1:
+                                    del_trade_id = st.selectbox(
+                                        "삭제할 매매 기록 선택",
+                                        options=[t.get("id", i+1) for i, t in enumerate(rr["trades"])],
+                                        format_func=lambda tid: next(f"ID {tid}: {t['date']} {type_label[t['type']]} ({money(t['price'])}, {t['qty']}주)" for i, t in enumerate(rr["trades"]) if t.get("id", i+1) == tid),
+                                        key=f"del_trade_sel_{rr['id']}"
+                                    )
+                                with del_col2:
+                                    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                                    if st.button("🗑️ 기록 삭제", key=f"btn_del_trade_{rr['id']}", use_container_width=True):
+                                        rr["trades"] = [t for i, t in enumerate(rr["trades"]) if t.get("id", i+1) != del_trade_id]
+                                        recalculate_round(rr, rr["startCapital"])
+                                        persist()
+                                        st.success("선택한 거래가 삭제되고 라운드 상태가 재계산되었습니다.")
+                                        st.rerun()
+                        else:
+                            st.caption("거래 기록 없음")
+                        st.markdown("</div>", unsafe_allow_html=True)
+                        
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">전체 요약</div>', unsafe_allow_html=True)
+        h1, h2 = st.columns(2)
+        with h1:
+            kv("완료된 라운드", str(sum(1 for x in current_p["rounds"] if x["status"] == "closed")))
+        with h2:
+            kv("누적 실현손익", money(total_realized), color="var(--profit)" if total_realized >= 0 else "var(--loss)")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
         # ---- 그래프 2: 라운드별 수익금 / 수익률 ----
         closed_rounds_for_chart = [x for x in current_p["rounds"] if x["status"] == "closed"]
         if closed_rounds_for_chart:
@@ -2088,101 +2313,9 @@ with tab_history:
             st.line_chart(perf_df[["누적수익금"]], use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
  
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">전체 요약</div>', unsafe_allow_html=True)
-        h1, h2 = st.columns(2)
-        with h1:
-            kv("완료된 라운드", str(sum(1 for x in current_p["rounds"] if x["status"] == "closed")))
-        with h2:
-            kv("누적 실현손익", money(total_realized), color="var(--profit)" if total_realized >= 0 else "var(--loss)")
-        st.markdown("</div>", unsafe_allow_html=True)
- 
-        st.markdown("#### 라운드별 상세 기록")
-        st.caption("완료된 라운드를 포함해 모든 라운드 기록을 아래에서 펼쳐볼 수 있습니다.")
- 
-        for rr in reversed(current_p["rounds"]):
-            if rr["status"] == "active":
-                status_html = '<span class="tag dim">진행중</span>'
-            else:
-                pnl = rr.get("realizedPnl", 0)
-                status_html = f'<span class="tag {"profit" if pnl>=0 else "loss"}">{"수익" if pnl>=0 else "손절"} {money(pnl)}</span>'
-            period = rr["startDate"] + (f' ~ {rr["closedDate"]}' if rr.get("closedDate") else "")
-            expander_label = f'Round #{rr["id"]}  ·  {period}  ·  {"진행중" if rr["status"]=="active" else ("수익 " + money(rr.get("realizedPnl", 0)) if rr.get("realizedPnl", 0) >= 0 else "손절 " + money(rr.get("realizedPnl", 0)))}'
- 
-            with st.expander(expander_label, expanded=(rr["status"] == "active")):
-                st.markdown('<div class="round-block">', unsafe_allow_html=True)
-                st.markdown(
-                    f'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">'
-                    f'<div><b>Round #{rr["id"]}</b> <span style="color:var(--text-faint); font-size:12px;">{period}</span></div>'
-                    f'<div>{status_html}</div></div>',
-                    unsafe_allow_html=True,
-                )
-                if rr.get("finalCapital") is not None:
-                    st.caption(
-                        f"라운드 종료 시 다음 라운드로 이월된 금액(잔금+미편입 쿼터매도 익절 초과분): {money(rr['finalCapital'])}"
-                    )
-                if rr["trades"]:
-                    rows = []
-                    type_label = {"buy": "매수", "quarter_sell": "쿼터매도", "final_sell": "지정가매도"}
-                    for idx, t in enumerate(rr["trades"]):
-                        rows.append({
-                            "ID": t.get("id", idx + 1),
-                            "날짜": t["date"],
-                            "유형": type_label[t["type"]],
-                            "가격": round(t["price"], 2),
-                            "수량": round(t["qty"], 4),
-                            "금액": round(t["amount"], 2),
-                            "T": round(t["tAfter"], 3),
-                            "평단": round(t["avgAfter"], 2),
-                            "손익": (round(t["pnl"], 2) if t["pnl"] is not None else "—"),
-                        })
-                    display_df = pd.DataFrame(rows)
 
-                    # 화면 표시 순서만 최신 날짜 → 과거 날짜
-                    display_df["_date_sort"] = pd.to_datetime(
-                        display_df["날짜"],
-                        errors="coerce"
-                    )
-
-                    display_df = (
-                        display_df
-                        .sort_values(
-                            "_date_sort",
-                            ascending=False,
-                            kind="stable"
-                        )
-                        .drop(columns="_date_sort")
-                        .reset_index(drop=True)
-                    )
-
-                    st.dataframe(
-                        display_df,
-                        use_container_width=True,
-                        hide_index=True
-                    )
  
-                    # 거래 기록 삭제 UI (진행 중인 라운드는 개별 수정 가능)
-                    if rr["status"] == "active":
-                        st.markdown("---")
-                        del_col1, del_col2 = st.columns([3, 1])
-                        with del_col1:
-                            del_trade_id = st.selectbox(
-                                "삭제할 매매 기록 선택",
-                                options=[t.get("id", i+1) for i, t in enumerate(rr["trades"])],
-                                format_func=lambda tid: next(f"ID {tid}: {t['date']} {type_label[t['type']]} ({money(t['price'])}, {t['qty']}주)" for i, t in enumerate(rr["trades"]) if t.get("id", i+1) == tid),
-                                key=f"del_trade_sel_{rr['id']}"
-                            )
-                        with del_col2:
-                            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                            if st.button("🗑️ 기록 삭제", key=f"btn_del_trade_{rr['id']}", use_container_width=True):
-                                rr["trades"] = [t for i, t in enumerate(rr["trades"]) if t.get("id", i+1) != del_trade_id]
-                                recalculate_round(rr, rr["startCapital"])
-                                persist()
-                                st.success("선택한 거래가 삭제되고 라운드 상태가 재계산되었습니다.")
-                                st.rerun()
-                else:
-                    st.caption("거래 기록 없음")
-                st.markdown("</div>", unsafe_allow_html=True)
+        
  
 # ---------------- 설정 ----------------
 with tab_settings:
