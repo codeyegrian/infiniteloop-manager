@@ -930,20 +930,17 @@ def determine_buy_action(current_price, avg_cost, star_point):
         return "계산 불가"
 
     # 1. 현재가 > 평단 < ★
-    if current_price > avg_cost and avg_cost < star_point:
-        return " 매수를 하지마세요"
+    if current_price < avg_cost and current_price < star_point:
+        return "평단, ★지점 매수를 하세요"
 
-    # 2. 현재가 < 평단 < ★
-    if current_price < avg_cost and avg_cost < star_point:
+    if current_price < avg_cost and current_price >= star_point:
         return "평단 매수만 하세요"
 
-    # 3. 현재가 > 평단 > ★
-    if current_price > avg_cost and avg_cost > star_point:
+    if current_price >= avg_cost and current_price < star_point:
         return "★지점 매수만 하세요"
 
-    # 4. 현재가 < 평단 > ★
-    if current_price < avg_cost and avg_cost > star_point:
-        return "평단, ★지점 매수 하세요"
+    if current_price >= avg_cost and current_price >= star_point:
+        return "매수하지 마세요"
 
     return "계산 불가"
 
@@ -1886,7 +1883,7 @@ with tab_guide:
  
         if crash_rows:
             st.markdown(
-                '<div class="kv-label" style="margin-top:6px;">+@ 폭락장 추가 매수 (발동 시 해당 단계 1개만 단독 실행)</div>',
+                '<div class="kv-label" style="margin-top:6px;">+@ 폭락장 매수 (발동 시 해당 단계 1개만 단독 실행)</div>',
                 unsafe_allow_html=True,
             )
             crash_lines = "".join(
@@ -1899,8 +1896,8 @@ with tab_guide:
  
         st.markdown(
             f'<div class="note">오늘 목표매수금액 {money(g["target_amount"])} 을 절반씩 나누어 '
-            f'평단가 {money(r["avgCost"])} 와 매수기준가(★지점) {money(g["buy_trigger"])} 에 동시에 LOC 매수합니다. <br>'
-            f'급락 대비 그 아래로도 분할 LOC 매수 추가를 권장합니다.</div>',
+            f'평단가 {money(r["avgCost"])} 와 매수기준가(★지점) {money(g["buy_trigger"])} 에  LOC 매수합니다. </div>',
+          
             unsafe_allow_html=True,
         )
         st.markdown("</div>", unsafe_allow_html=True)
