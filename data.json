@@ -6,7 +6,7 @@
       "config": {
         "symbol": "SOXL",
         "splits": 20,
-        "capital": 21253.19,
+        "capital": 20000.0,
         "compounding": true
       },
       "price_history": [],
@@ -1659,5 +1659,5 @@
       ]
     }
   ],
-  "active_portfolio_id": 2
+  "active_portfolio_id": null
 }
