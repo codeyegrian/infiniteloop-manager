@@ -1,5 +1,5 @@
 """
-추추무매v3.2
+추추무매v3.3
 Streamlit 앱 — app.py
  
 실행: streamlit run app.py
@@ -40,6 +40,28 @@ Streamlit 앱 — app.py
     (최신 일봉 날짜가 오늘인지로 실제 거래일 여부를 판정)
 20. 콕핏에 '총자산'(잔금 + 평가금액 + 미편입 실현수익) 표시 추가 — 증권사 잔고 대조용
 21. GitHub 토큰 미설정 시 로컬 파일 저장은 휘발성이므로 사이드바에 경고 표시
+------------------------------------------------------------------------------
+[3차 수정 내역] (v3.3 최종 이론·백테스터 정합)
+22. [치명] 사이클 첫 매수일에 폭락장이 와도 1T 고정 (기존: 폭락 배율 1.95T+를 그대로 유지하던 오류).
+    백테스트와 동일하게 "첫날은 지표·폭락 여부와 무관하게 1T 한 번만 매수"한다.
+23. 전량익절 후 재시작일 가이드 추가 (이론 0-1): 새 라운드 첫 매수 + 직전 라운드가 전량익절로
+    종료됐으면 "1T 매수 + 같은 날 일일매수 절반"을 종가 기준으로 안내한다.
+    (폭락장이면 폭락 배율의 절반, 아니면 당일 국면 배율의 절반)
+24. MA42/MA43/20일전 종가를 "오늘 이전 완료봉" 기준으로 통일.
+    장중·장전·장마감후·휴장일 모두 백테스트 전일 기준(shift(1)/shift(20))과 동일하게 동작한다.
+25. 매도 가이드 라벨 수정: "Limit Sell all Trailing Stop" → "지정가 전량익절 +20% (트레일링 없음)".
+26. 매수 가이드 표시 순서 수정: 첫 매수일(일반/재시작) 판정을 폭락장보다 먼저 처리한다.
+    (기존: 첫날 폭락 시 폭락장 카드가 먼저 떠서 1.95T 매수를 안내하던 오류)
+27. determine_multiplier 비교를 백테스트와 동일한 엄격 부등식(>)으로 통일.
+    20일전 종가 데이터 부족 시 백테스트처럼 MA42 위치만으로 1.4976T/0.6831T를 선택한다.
+28. ★매수 판정 기준을 백테스트와 동일하게 별지점-0.01로 수정
+    (determine_buy_action에 buy_trigger 전달).
+29. 전량익절률을 백테스트 채택값 20%로 수정 (기존 19.8%).
+30. Yahoo 시세 조회 실패 시 오늘의 가이드가 표시되지 않던 문제 수정
+    (guide를 항상 계산하도록 변경).
+31. 수동 입력/Excel에서 전량매도 수량이 보유수량과 다르면 라운드를 닫지 않고 오류 처리.
+32. Excel 가져오기에 전량매도 유형 추가 ("전량매도"/"지정가매도"/"final_sell").
+    전량매도 이후 거래는 자동으로 시작된 새 라운드에 기록된다.
 ------------------------------------------------------------------------------
 3.0
 일반매수 기 이평선 병경, 폭락장매수 기준이평선 변경, 일반매수 비중변경
@@ -94,7 +116,7 @@ DEEP_41_T = 2.10
 DEEP_45_5_PCT = -41
 DEEP_45_5_T = 2.50
 
-PROFIT_TARGET = 1.2
+PROFIT_TARGET = 1.20
 
 """
  
@@ -256,6 +278,7 @@ def star_percent(symbol, splits, T):
     return (20 - 2 * T) if splits == 20 else (20 - T)
  
 def sell_profit_pct(symbol):
+    # 전량익절은 평단 × 1.20 고정 지정가 (트레일링 없음)
     return 15 if symbol == "TQQQ" else 20
  
 def ma42(history):
@@ -271,18 +294,19 @@ def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None):
     """
     추추무매 매수 로직
  
-    0) 최초 매수: 1.0T (별지점 0.5T + 평단매수 0.5T)
+    0) 최초 매수: 1.0T (지표·폭락 여부와 무관하게 1T 한 번만 매수)
+    0-1) 전량익절 후 재시작일: 1T + 같은 날 일일매수 절반
     1-1) MA42 위 + 20일전 종가보다 위: 1.4976T
     1-2) MA42 위 + 20일전 종가보다 아래: 0.7356T
     2-1) MA42 아래 + 20일전 종가보다 위: 0.6831T
-    2-2) MA42 아래 + 20일전 종가보다 낮음: 1.003T
+    2-2) MA42 아래 + 20일전 종가보다 낮음: 1.0003T
  
     폭락장 조건은 위 일반 매수 로직보다 항상 최우선:
     MA43 대비 -35% 이상  -> 1.95T
     MA43 대비 -37% 이상  -> 2.10T
     MA43 대비 -41% 이상  -> 2.50T
  
-    ※ 1.0T / 0.7356T / 0.6831T / 1.003T 는 각각
+    ※ 1.4976T / 0.7356T / 0.6831T / 1.0003T 는 각각
        별지점 매수와 평단매수에 절반씩 배분한다.
     ※ 폭락장 배수(1.95T~2.5T)는 절반으로 쪼개지 않고
        해당 단계 가격 1곳에 단독으로 집행한다. (문서 규칙)
@@ -303,14 +327,16 @@ def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None):
     # ---------------------------------------------------------
     # 일반 매수 로직
     # ---------------------------------------------------------
-    above_ma = close >= ma42val
+    above_ma = close > ma42val
 
-    # 20거래일 전 종가 데이터가 아직 없으면
-    # 기본값 1.0T
+    # 20거래일 전 종가 데이터가 아직 없으면 백테스트와 동일하게
+    # MA42 위치만으로 판단한다 (위: 1.4976T / 아래: 0.6831T).
     if close_20d_ago is None:
-        return 1.0, "20거래일 전 종가 데이터 부족 (기본 1.0T)", None
+        if above_ma:
+            return 1.4976, "MA42 위 (20일전 종가 데이터 부족)", None
+        return 0.6831, "MA42 아래 (20일전 종가 데이터 부족)", None
 
-    above_20d_close = close >= close_20d_ago
+    above_20d_close = close > close_20d_ago
 
     if above_ma and above_20d_close:
         # 1-1 상승추세: 0.7488T 별지점 + 0.7488T 평단
@@ -675,6 +701,7 @@ def import_trades_from_excel(p, r, uploaded_file):
     구분:
       매수
       쿼터매도
+      전량매도 (보유수량 전부 매도 → 라운드 종료 후 새 라운드 시작)
  
     T는 Excel에서 가져오지 않고 현재 추추무매 규칙으로 다시 계산한다.
     """
@@ -766,6 +793,12 @@ def import_trades_from_excel(p, r, uploaded_file):
             "quarter_sell": "quarter_sell",
             "quarter sell": "quarter_sell",
             "YOU SOLD": "quarter_sell",
+
+            "전량매도": "final_sell",
+            "전량 매도": "final_sell",
+            "지정가매도": "final_sell",
+            "final_sell": "final_sell",
+            "final sell": "final_sell",
         }
  
         df["type_normalized"] = (
@@ -787,7 +820,7 @@ def import_trades_from_excel(p, r, uploaded_file):
             raise ValueError(
                 "인식할 수 없는 거래 유형: "
                 + ", ".join(bad_types)
-                + "\n사용 가능한 유형: 매수 / 쿼터매도"
+                + "\n사용 가능한 유형: 매수 / 쿼터매도 / 전량매도"
             )
  
         # -----------------------------
@@ -879,20 +912,41 @@ def import_trades_from_excel(p, r, uploaded_file):
                 )
  
             elif trade_type == "quarter_sell":
- 
+
                 if qty > r["qty"] + 1e-9:
                     raise ValueError(
                         f"{dt}: 쿼터매도 수량 {qty:g}주가 "
                         f"당시 보유수량 {r['qty']:g}주보다 많습니다."
                     )
- 
+
                 apply_quarter_sell(
                     r,
                     dt,
                     price,
                     qty
                 )
- 
+
+            elif trade_type == "final_sell":
+
+                qty = abs(qty)
+
+                if qty > r["qty"] + 1e-9:
+                    raise ValueError(
+                        f"{dt}: 전량매도 수량 {qty:g}주가 "
+                        f"당시 보유수량 {r['qty']:g}주보다 많습니다."
+                    )
+
+                if qty < r["qty"] - 1e-9:
+                    raise ValueError(
+                        f"{dt}: 전량매도 수량 {qty:g}주가 보유수량 {r['qty']:g}주와 다릅니다. "
+                        f"전량매도는 보유수량 전부를 입력해야 합니다."
+                    )
+
+                apply_final_sell(p, r, dt, price, r["qty"])
+
+                # 전량매도는 새 라운드를 시작하므로 이후 거래는 새 라운드에 기록한다.
+                r = active_round(p)
+
             imported_count += 1
  
         return True, imported_count
@@ -903,8 +957,8 @@ def import_trades_from_excel(p, r, uploaded_file):
 
 def determine_buy_action(current_price, avg_cost, star_point):
     """
-    현재가 / 평단가 / ★지점의 위치를 비교하여
-    매수 방법을 자동 결정한다.
+    현재가 / 평단가 / ★매수기준가(별지점 - 0.01)의 위치를 비교하여
+    매수 방법을 자동 결정한다. (세 번째 인자는 buy_trigger를 전달)
 
     1) 현재가 > 평단 < ★
        → 평단 + ★ 매수
@@ -971,19 +1025,25 @@ def compute_guide(p, market=None):
     # ---------------------------------------------------------
     hist_rows = market.get("history", [])
 
+    # 백테스트 전일 기준(shift(1)/shift(20))과 통일: 오늘 날짜 봉(미완성 또는
+    # 당일 완료봉)은 신호일이 아니므로 제외하고, 오늘 이전 완료봉만으로
+    # MA42/MA43/20일전 종가를 계산한다. 장중·장전·장마감후·휴장일 모두 동일.
+    today_str = str(datetime.now(NY_TZ).date())
+    ref_rows = [x for x in hist_rows if x["date"] < today_str]
+
     # ---------------------------------------------------------
     # MA42 / MA43 계산
     # 추추무매 실제 매수 판단용
     # ---------------------------------------------------------
     ma42val = (
-        sum(x["close"] for x in hist_rows[-42:]) / 42
-        if len(hist_rows) >= 42
+        sum(x["close"] for x in ref_rows[-42:]) / 42
+        if len(ref_rows) >= 42
         else None
     )
 
     ma43val = (
-        sum(x["close"] for x in hist_rows[-43:]) / 43
-        if len(hist_rows) >= 43
+        sum(x["close"] for x in ref_rows[-43:]) / 43
+        if len(ref_rows) >= 43
         else None
     )
 
@@ -993,29 +1053,13 @@ def compute_guide(p, market=None):
     else None
     )
 
-    # ---------------------------------------------------------
-    # 20거래일 전 종가
-    #
-    # 장중:
-    #   history 마지막 = 어제
-    #   오늘 기준 20거래일 전 = history[-20]
-    #
-    # 장 마감 후:
-    #   history 마지막 = 오늘
-    #   오늘 기준 20거래일 전 = history[-21]
-    # ---------------------------------------------------------
-    if market.get("market_open"):
-        close_20d_ago = (
-            hist_rows[-20]["close"]
-            if len(hist_rows) >= 20
-            else None
-        )
-    else:
-        close_20d_ago = (
-            hist_rows[-21]["close"]
-            if len(hist_rows) >= 21
-            else None
-        )
+    # 오늘 기준 20거래일 전 종가 = 오늘 이전 완료봉 기준 [-20]
+    # (백테스트 shift(20)과 동일)
+    close_20d_ago = (
+        ref_rows[-20]["close"]
+        if len(ref_rows) >= 20
+        else None
+    )
 
     # ---------------------------------------------------------
     # 추추무매 매수 배수 계산
@@ -1047,14 +1091,37 @@ def compute_guide(p, market=None):
         and abs(T) < 1e-9
     )
 
+    # 전량익절 후 재시작일 판정 (이론 0-1):
+    # 새 라운드에 아직 거래가 없고, 직전 라운드가 전량익절로 종료됐으며,
+    # 종료일이 오늘보다 이전이면 오늘이 재시작일이다.
+    today_iso = date.today().isoformat()
+    rounds_all = p.get("rounds", [])
+    prev_round = rounds_all[-2] if len(rounds_all) >= 2 else None
+    prev_closed = (
+        prev_round is not None
+        and prev_round.get("status") == "closed"
+    )
+    is_restart_day = (
+        is_first_buy
+        and prev_closed
+        and (prev_round.get("closedDate") or "") < today_iso
+    )
+    # 전량익절 당일은 재매수하지 않는다 (이론: 당일 재매수 금지)
+    is_exit_day = (
+        is_first_buy
+        and prev_closed
+        and prev_round.get("closedDate") == today_iso
+    )
+
     # ---------------------------------------------------------
-    # 최초 매수는 1T
-    # 단, 폭락장 조건은 최우선이므로
-    # 1.95T / 2.10T / 2.50T는 그대로 유지
+    # 사이클 첫날은 지표·폭락 여부와 무관하게 1T 한 번만 매수
+    # (백테스트와 동일). 단, 전량익절 후 재시작일은 이론 0-1에 따라
+    # "1T + 같은 날 일일매수 절반"을 안내하므로 배율을 유지한다.
     # ---------------------------------------------------------
-    if is_first_buy and mult < 1.0:
+    if is_first_buy and not is_restart_day:
         mult = 1.0
         reason = "최초 매수 (1T 고정)"
+        crash_tier = None
 
     # ---------------------------------------------------------
     # 별지점
@@ -1075,10 +1142,11 @@ def compute_guide(p, market=None):
     # =========================================================
     # 현재가 / 평단 / ★지점 자동 매수 판단
     # =========================================================
+    # 백테스트 STAR_BUY_OFFSET: 별 조건은 종가 <= 별지점 - 0.01
     buy_action = determine_buy_action(
         close,
         r["avgCost"],
-        star_point,
+        buy_trigger,
     )
 
     divisor_remaining = splits - T
@@ -1179,6 +1247,13 @@ def compute_guide(p, market=None):
     remainder_qty=final_sell_qty,
 
     is_first_buy=is_first_buy,
+    is_restart_day=is_restart_day,
+    is_exit_day=is_exit_day,
+    restart_half_amount=(
+        base1x * mult * 0.5
+        if (is_restart_day and base1x is not None)
+        else None
+    ),
     divisor_remaining=divisor_remaining,
 
     market=market,
@@ -1598,7 +1673,7 @@ except Exception as exc:
     }
     market_error = str(exc)
  
-guide = compute_guide(current_p, market) if market_error is None else None
+guide = compute_guide(current_p, market)
  
 # 포트폴리오 상단 콕핏
 st.title(f"📈 {current_p['name']}")
@@ -1781,6 +1856,55 @@ with tab_guide:
             unsafe_allow_html=True,
         )
 
+    elif g["is_first_buy"]:
+        # 사이클 첫날은 하루에 한 종류만 매수한다 (이론 0-2):
+        # 폭락장 카드보다 먼저 판정한다.
+        if g["is_restart_day"]:
+            half_amt = g["restart_half_amount"]
+            half_qty = (half_amt / g["close"]) if (half_amt and g["close"]) else None
+            first_qty = (g["base1x"] / g["close"]) if (g["base1x"] and g["close"]) else None
+            if g["crash_tier"] is not None:
+                half_label = f'② 폭락장 대응 절반 (-{g["crash_tier"]}%)'
+            else:
+                half_label = f'② 일일매수 절반 ({g["mult"]:.2f}T × 0.5)'
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown('<div class="card-title">매수 가이드 <span class="tag buy">전량익절 후 재시작</span></div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="note">사이클 종료 후 첫날입니다. <b>1T 매수 + 같은 날 일일매수 절반</b>을 종가로 매수하세요 (이론 0-1). '
+                '오늘 이 두 건이 하나의 "첫날매수"이므로 다른 매수는 하지 않습니다 (이론 0-2).</div>',
+                unsafe_allow_html=True,
+            )
+            b1, b2 = st.columns(2)
+            with b1:
+                kv("① 첫 매수 1T (종가)", f'{money(g["base1x"])} × {shares_fmt(first_qty)}')
+            with b2:
+                kv(f'{half_label} (종가)', f'{money(half_amt)} × {shares_fmt(half_qty)}')
+            st.markdown("</div>", unsafe_allow_html=True)
+        elif g["is_exit_day"]:
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown('<div class="card-title">매수 가이드 <span class="tag dim">전량익절일</span></div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="note">오늘 전량익절로 사이클이 종료됐습니다. <b>당일은 재매수하지 않습니다.</b> '
+                '다음 거래일부터 새 사이클(1T + 일일매수 절반)로 시작하세요.</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            low = g["close"] * 1.10 if g["close"] is not None else None
+            high = g["close"] * 1.15 if g["close"] is not None else None
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown('<div class="card-title">매수 가이드 <span class="tag buy">최초 매수</span></div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="note">보유수량이 없는 최초 매수입니다. 전일 종가 대비 <b>10~15% 위</b> 가격부터 아래로 '
+                f'LOC 매수를 걸어 목표금액({money(g["target_amount"])})을 소진하세요.</div>',
+                unsafe_allow_html=True,
+            )
+            b1, b2 = st.columns(2)
+            with b1:
+                kv("권장 시작가 (10~15% 위)", f'{money(low)} ~ {money(high)}' if low else "종가 입력 필요")
+            with b2:
+                kv(f'오늘 매수 목표금액 ({g["mult"]:.2f}T)', money(g["target_amount"]))
+            st.markdown("</div>", unsafe_allow_html=True)
     elif g["crash_tier"] is not None:
         # -----------------------------------------------------------------
         # 폭락장 대응: 문서 규칙상 가장 깊은 단계 1개만 단독 실행하고,
@@ -1808,25 +1932,9 @@ with tab_guide:
             unsafe_allow_html=True,
         )
         st.markdown("</div>", unsafe_allow_html=True)
-    elif g["is_first_buy"]:
-        low = g["close"] * 1.10 if g["close"] is not None else None
-        high = g["close"] * 1.15 if g["close"] is not None else None
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">매수 가이드 <span class="tag buy">최초 매수</span></div>', unsafe_allow_html=True)
-        st.markdown(
-            f'<div class="note">보유수량이 없는 최초 매수입니다. 전일 종가 대비 <b>10~15% 위</b> 가격부터 아래로 '
-            f'LOC 매수를 걸어 목표금액({money(g["target_amount"])})을 소진하세요.</div>',
-            unsafe_allow_html=True,
-        )
-        b1, b2 = st.columns(2)
-        with b1:
-            kv("권장 시작가 (10~15% 위)", f'{money(low)} ~ {money(high)}' if low else "종가 입력 필요")
-        with b2:
-            kv(f'오늘 매수 목표금액 ({g["mult"]:.2f}T)', money(g["target_amount"]))
-        st.markdown("</div>", unsafe_allow_html=True)
     else:
         # 문서 규칙: 목표금액을 항상 절반씩 나눠 "평단가"와 "★지점(별지점)"에 각각 매수한다.
-        # (20일선 위=1.0T, 아래=0.7675T , 0.7475T , 0.7875T 로 목표금액 자체가 달라질 뿐, 절반씩 나누는 방식은 동일)
+        # (1.4976T / 0.7356T / 0.6831T / 1.0003T 로 목표금액 자체가 달라질 뿐, 절반씩 나누는 방식은 동일)
         half_amount = g["target_amount"] / 2 if g["target_amount"] is not None else None
         crash_rows = crash_tier_table(g["ma43"], g["base1x"])
 
@@ -1915,7 +2023,7 @@ with tab_guide:
             unsafe_allow_html=True,
         )
         st.markdown(
-            f'<div class="kv-label" style="margin-top:6px;font-weight:bold;">Limit Sell all Trailing Stop +{g["s_pct"]}% -0.5%</div>',
+            f'<div class="kv-label" style="margin-top:6px;font-weight:bold;">지정가 전량익절 +{g["s_pct"]}% (트레일링 없음)</div>',
             unsafe_allow_html=True,
         )
         st.markdown(
@@ -2146,6 +2254,8 @@ with tab_trade:
             st.error("가격과 수량을 올바르게 입력하세요.")
         elif ttype in ("quarter_sell", "final_sell") and t_qty > r["qty"] + 1e-9:
             st.error("보유수량보다 많습니다.")
+        elif ttype == "final_sell" and t_qty < r["qty"] - 1e-9:
+            st.error(f"지정가매도(전량)는 보유수량 전부를 매도해야 합니다. 현재 보유수량: {r['qty']:g}주")
         else:
             d_str = t_date.isoformat()
             if ttype == "buy":
