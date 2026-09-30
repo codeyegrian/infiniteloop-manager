@@ -985,16 +985,16 @@ def determine_buy_action(current_price, avg_cost, star_point):
 
     # 1. 현재가 > 평단 < ★
     if current_price < avg_cost and current_price < star_point:
-        return "평단, ★지점 매수를 하세요"
+        return "평단 + ★지점 매수"
 
     if current_price < avg_cost and current_price >= star_point:
-        return "평단 매수만 하세요"
+        return "평단 매수"
 
     if current_price >= avg_cost and current_price < star_point:
-        return "★지점 매수만 하세요"
+        return "★지점 매수"
 
     if current_price >= avg_cost and current_price >= star_point:
-        return "매수하지 마세요"
+        return "매수 없음"
 
     return "계산 불가"
 
