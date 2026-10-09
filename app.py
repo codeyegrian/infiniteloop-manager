@@ -1,5 +1,5 @@
 """
-추추무매v3.3
+추추무매v3.2
 Streamlit 앱 — app.py
  
 실행: streamlit run app.py
@@ -985,16 +985,16 @@ def determine_buy_action(current_price, avg_cost, star_point):
 
     # 1. 현재가 > 평단 < ★
     if current_price < avg_cost and current_price < star_point:
-        return "평단 + ★지점 매수"
+        return "평단, ★지점 매수를 하세요"
 
     if current_price < avg_cost and current_price >= star_point:
-        return "평단 매수"
+        return "평단 매수만 하세요"
 
     if current_price >= avg_cost and current_price < star_point:
-        return "★지점 매수"
+        return "★지점 매수만 하세요"
 
     if current_price >= avg_cost and current_price >= star_point:
-        return "매수 없음"
+        return "매수하지 마세요"
 
     return "계산 불가"
 
@@ -1114,14 +1114,10 @@ def compute_guide(p, market=None):
     )
 
     # ---------------------------------------------------------
-    # 사이클 첫날은 지표·폭락 여부와 무관하게 1T 한 번만 매수
-    # (백테스트와 동일). 단, 전량익절 후 재시작일은 이론 0-1에 따라
-    # "1T + 같은 날 일일매수 절반"을 안내하므로 배율을 유지한다.
+    # 사이클 첫날(최초 매수·재시작일 공통)은 1T + 같은 날 일일매수 절반
+    # (이론 0). 절반 계산에 당일 국면 배율이 필요하므로
+    # determine_multiplier의 배율을 그대로 유지한다.
     # ---------------------------------------------------------
-    if is_first_buy and not is_restart_day:
-        mult = 1.0
-        reason = "최초 매수 (1T 고정)"
-        crash_tier = None
 
     # ---------------------------------------------------------
     # 별지점
@@ -1249,9 +1245,9 @@ def compute_guide(p, market=None):
     is_first_buy=is_first_buy,
     is_restart_day=is_restart_day,
     is_exit_day=is_exit_day,
-    restart_half_amount=(
+    first_day_half_amount=(
         base1x * mult * 0.5
-        if (is_restart_day and base1x is not None)
+        if (is_first_buy and base1x is not None)
         else None
     ),
     divisor_remaining=divisor_remaining,
@@ -1763,7 +1759,6 @@ tab_guide, tab_market, tab_trade, tab_history, tab_settings = st.tabs(
 # ---------------- 오늘의 가이드 ----------------
 with tab_guide:
     g = guide
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     # 시세 상태별 색상
     tier = g["tier"]
 
@@ -1827,7 +1822,6 @@ with tab_guide:
 
     st.markdown("</div>", unsafe_allow_html=True)
  
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     used_seed = g["cumulative_buy_amount"]
     total_seed = cfg["capital"]
     seed_pct = (used_seed / total_seed * 100) if total_seed else None
@@ -1860,7 +1854,7 @@ with tab_guide:
         # 사이클 첫날은 하루에 한 종류만 매수한다 (이론 0-2):
         # 폭락장 카드보다 먼저 판정한다.
         if g["is_restart_day"]:
-            half_amt = g["restart_half_amount"]
+            half_amt = g["first_day_half_amount"]
             half_qty = (half_amt / g["close"]) if (half_amt and g["close"]) else None
             first_qty = (g["base1x"] / g["close"]) if (g["base1x"] and g["close"]) else None
             if g["crash_tier"] is not None:
@@ -1890,20 +1884,25 @@ with tab_guide:
             )
             st.markdown("</div>", unsafe_allow_html=True)
         else:
-            low = g["close"] * 1.10 if g["close"] is not None else None
-            high = g["close"] * 1.15 if g["close"] is not None else None
+            half_amt = g["first_day_half_amount"]
+            half_qty = (half_amt / g["close"]) if (half_amt and g["close"]) else None
+            first_qty = (g["base1x"] / g["close"]) if (g["base1x"] and g["close"]) else None
+            if g["crash_tier"] is not None:
+                half_label = f'② 폭락장 대응 절반 (-{g["crash_tier"]}%)'
+            else:
+                half_label = f'② 일일매수 절반 ({g["mult"]:.2f}T × 0.5)'
             st.markdown('<div class="card">', unsafe_allow_html=True)
             st.markdown('<div class="card-title">매수 가이드 <span class="tag buy">최초 매수</span></div>', unsafe_allow_html=True)
             st.markdown(
-                f'<div class="note">보유수량이 없는 최초 매수입니다. 전일 종가 대비 <b>10~15% 위</b> 가격부터 아래로 '
-                f'LOC 매수를 걸어 목표금액({money(g["target_amount"])})을 소진하세요.</div>',
+                '<div class="note">보유수량이 없는 최초 매수입니다. <b>1T 매수 + 같은 날 일일매수 절반</b>을 종가로 매수하세요 (이론 0). '
+                '오늘 이 두 건이 하나의 "첫날매수"이므로 다른 매수는 하지 않습니다 (이론 0-2).</div>',
                 unsafe_allow_html=True,
             )
             b1, b2 = st.columns(2)
             with b1:
-                kv("권장 시작가 (10~15% 위)", f'{money(low)} ~ {money(high)}' if low else "종가 입력 필요")
+                kv("① 첫 매수 1T (종가)", f'{money(g["base1x"])} × {shares_fmt(first_qty)}')
             with b2:
-                kv(f'오늘 매수 목표금액 ({g["mult"]:.2f}T)', money(g["target_amount"]))
+                kv(f'{half_label} (종가)', f'{money(half_amt)} × {shares_fmt(half_qty)}')
             st.markdown("</div>", unsafe_allow_html=True)
     elif g["crash_tier"] is not None:
         # -----------------------------------------------------------------
@@ -1983,8 +1982,8 @@ with tab_guide:
             f'<span style="font-size:14pt;color:#4DABF7;">{money(r["avgCost"])} × {shares_fmt(qty_avgcost)}</span>'
             f'<span style="margin-left:24px; font-size:9pt; color:#000000; font-weight:bold;">★매수(별지점)</span> '
             f'<span style="font-size:14pt;color:#B197FC;">{money(g["buy_trigger"])} × {shares_fmt(qty_starpoint)}</span>'
-            f'<br><span style="font-size:9pt; color:var(--text-faint); font-weight:bold;">'
-            f'참고: 현재가 기준 목표금액 전액매수 시 → {money(g["close"])} × {shares_fmt(current_price_qty)}</span>'
+            f'<br><span style="font-size:9pt; color:#000000; font-weight:bold;">'
+            f'현재가 기준 → {money(g["close"])} × {shares_fmt(current_price_qty)}</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
