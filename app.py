@@ -1,5 +1,5 @@
 """
-추추무매v3.2
+추추무매v3.3
 Streamlit 앱 — app.py
  
 실행: streamlit run app.py
@@ -93,7 +93,7 @@ backtest에서 수익금이 두번 편입되는 오류 수정
 
 수익률 20% 에서 지정가 -0.25% 트레일링 매도 
 ------------------------------------------------------------------------------------
-에이든-추추무매 v3.2
+에이든-추추무매 v3.3
 MA_PERIOD = 42
 DEEP_MA_PERIOD = 43
 
@@ -985,16 +985,16 @@ def determine_buy_action(current_price, avg_cost, star_point):
 
     # 1. 현재가 > 평단 < ★
     if current_price < avg_cost and current_price < star_point:
-        return "평단, ★지점 매수를 하세요"
+        return "평단 매수, ★지점 매수 "
 
     if current_price < avg_cost and current_price >= star_point:
-        return "평단 매수만 하세요"
+        return "평단 매수"
 
     if current_price >= avg_cost and current_price < star_point:
-        return "★지점 매수만 하세요"
+        return "★지점 매수"
 
     if current_price >= avg_cost and current_price >= star_point:
-        return "매수하지 마세요"
+        return "매수 금지"
 
     return "계산 불가"
 
@@ -1980,7 +1980,7 @@ with tab_guide:
             f'<div class="kv-value" style="font-size:17px; margin-top:8px; line-height:1.9;">'
             f'<span style="font-size:9pt; color:#000000; font-weight:bold;">평단매수</span> '
             f'<span style="font-size:14pt;color:#4DABF7;">{money(r["avgCost"])} × {shares_fmt(qty_avgcost)}</span>'
-            f'<span style="margin-left:24px; font-size:9pt; color:#000000; font-weight:bold;">★매수(별지점)</span> '
+            f'<span style="margin-left:24px; font-size:9pt; color:#000000; font-weight:bold;">★지점 매수</span> '
             f'<span style="font-size:14pt;color:#B197FC;">{money(g["buy_trigger"])} × {shares_fmt(qty_starpoint)}</span>'
             f'<br><span style="font-size:9pt; color:#000000; font-weight:bold;">'
             f'현재가 기준 → {money(g["close"])} × {shares_fmt(current_price_qty)}</span>'
@@ -1990,7 +1990,7 @@ with tab_guide:
  
         if crash_rows:
             st.markdown(
-                '<div class="kv-label" style="margin-top:6px;">+@ 폭락장 매수 (발동 시 해당 단계 1개만 단독 실행)</div>',
+                '<div class="kv-label" style="margin-top:6px;">+@ 폭락장 매수 (발동시 일반매수 대신 해당 단계 1개만 종가매수 )</div>',
                 unsafe_allow_html=True,
             )
             crash_lines = "".join(
@@ -2199,11 +2199,16 @@ with tab_trade:
         if guide and guide["star_point"] is not None:
             default_price = round(guide["star_point"], 2)
     else:
-        default_qty = float(int(r["qty"]))  # 정수 내림 (문서 규칙)
+        default_qty = float(int(r["qty"]))
         if guide and guide["sell_target"] is not None:
             default_price = round(guide["sell_target"], 2)
- 
+
+    # 방어: 데이터 오염으로 가이드가 음수가 되면 number_input(min_value=0.0)이
+    # 앱 전체를 멈추게 함. 기본값은 0 이상으로 고정한다. (2026-10-26 IRA 9050 오입력 사례)
+    default_price = max(0.0, default_price)
+
     with st.form("trade_form"):
+
         t_date = st.date_input("날짜", value=date.today(), key="t_date")
         tc1, tc2 = st.columns(2)
         with tc1:
