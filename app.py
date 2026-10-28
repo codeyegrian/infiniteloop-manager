@@ -93,7 +93,7 @@ backtest에서 수익금이 두번 편입되는 오류 수정
 
 수익률 20% 에서 지정가 -0.25% 트레일링 매도 
 ------------------------------------------------------------------------------------
-에이든-추추무매 v3.3
+에이든-추추무매 v3.2
 MA_PERIOD = 42
 DEEP_MA_PERIOD = 43
 
@@ -512,14 +512,20 @@ def fetch_yahoo_market(symbol):
     else None
 )
  
-    # 표시용 최근 60개 일봉 (오래된 -> 최신 순)
-    hist = completed.tail(60).copy()
+    # 표시용 최근 120개 일봉 (오래된 -> 최신 순)
+    # v3.4 볼린저 topwait 상태 재현에 42일 밴드 + 에피소드(약 25거래일) 분량이 필요해
+    # 60개에서 120개로 늘림. 시세 탭은 tail(20)만 표시하므로 화면은 그대로.
+    # high/low도 함께 담는다 (볼린저 상단/하단 터치 판정용).
+    hist = completed.tail(120).copy()
     history_rows = []
     for idx, row in hist.iterrows():
         dt = row["_date_et"]
         history_rows.append(
             {
                 "date": str(dt),
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
                 "close": float(row["Close"]),
             }
         )
@@ -1198,6 +1204,134 @@ def compute_guide(p, market=None):
         else None
     )
 
+    # ---------------------------------------------------------
+    # v3.4 볼린저 topwait 상태 (표시 전용 — 매수 로직은 바꾸지 않음)
+    # 전일 종가 기준(ref_rows)으로 백테스트 상태머신을 재현한다.
+    # idle -> armed(상단 터치, 10거래일 유효) -> waiting(42일선 하향 돌파)
+    # 해소: 하단 터치(따라잡기일) / 42일선 위 복귀(건너뛴 일수 소멸).
+    # 밴드·MA42·MA43 모두 전일 기준(shift(1))으로 백테스트와 동일.
+    # 건너뛴 일수 = 대기 상태였던 완료봉 수. 백테스트와 동일하게 폭락일은
+    # 적립에서 제외하고, 보유 0주면 적립하지 않는다 (사이클 중 대기만 카운트).
+    # "상단터치 N일차"는 터치 봉을 1일차로, 마지막 완료봉까지 센 일수.
+    # 오늘 터치 판정: 오늘 봉이 history에 있으면 그 저가, 없으면 현재가를
+    # 저가 대용으로 쓴다 (현재가 <= 하단이면 저가는 이미 하단을 터치한 것).
+    # ---------------------------------------------------------
+    tw_state = "idle"
+    tw_mode = "normal"
+    tw_touch_days = 0
+    tw_wait_days = 0
+    tw_boll_up = None
+    tw_boll_low = None
+    tw_catchup_shares = None
+    tw_catchup_factor = None
+    tw_touched_today = False
+    tw_near_low = False
+    _tw_n = len(ref_rows)
+    _tw_has_ohlc = _tw_n >= 43 and all(
+        x.get("high") is not None and x.get("low") is not None for x in ref_rows
+    )
+    if _tw_has_ohlc:
+        _tw_closes = [x["close"] for x in ref_rows]
+        _tw_highs = [x["high"] for x in ref_rows]
+        _tw_lows = [x["low"] for x in ref_rows]
+        _tw_last = _tw_n - 1
+        _st = "idle"
+        _armed = -1
+        _skipped = 0
+        for _i in range(42, _tw_n):
+            _w = _tw_closes[_i - 42:_i]
+            _m = sum(_w) / 42.0
+            _var = sum((_c - _m) ** 2 for _c in _w) / 41.0
+            _sd = _var ** 0.5
+            _up = _m + 2.0 * _sd
+            _lo = _m - 2.0 * _sd
+            _top = _tw_highs[_i] >= _up
+            _touch = _tw_lows[_i] <= _lo
+            _below = _tw_closes[_i] < _m
+            if _i >= 43:
+                _w43 = _tw_closes[_i - 43:_i]
+                _m43 = sum(_w43) / 43.0
+                _deep = (_tw_closes[_i] - _m43) / _m43 * 100.0 <= -35.0 if _m43 > 0 else False
+            else:
+                _deep = False
+            _catchup = False
+            if _st == "idle":
+                if _top:
+                    _st = "armed"
+                    _armed = _i
+            elif _st == "armed":
+                if _top:
+                    _armed = _i
+                elif _i - _armed > 10:
+                    _st = "idle"
+                elif _below:
+                    _st = "waiting"
+                    if _touch:
+                        _catchup = True
+                        _st = "idle"
+            elif _st == "waiting":
+                if _touch:
+                    _catchup = True
+                    _st = "idle"
+                elif not _below:
+                    _st = "idle"
+                    _skipped = 0
+            if _catchup:
+                _skipped = 0
+            elif _st == "waiting" and not _deep and r["qty"] > 0:
+                _skipped += 1
+        tw_state = _st
+        if tw_state in ("armed", "waiting") and _armed >= 0:
+            tw_touch_days = _tw_last - _armed + 1
+        if tw_state == "waiting":
+            tw_wait_days = _skipped
+            tw_catchup_factor = _skipped + 1.0
+        _w = _tw_closes[-42:]
+        _m = sum(_w) / 42.0
+        _var = sum((_c - _m) ** 2 for _c in _w) / 41.0
+        _sd = _var ** 0.5
+        tw_boll_up = _m + 2.0 * _sd
+        tw_boll_low = _m - 2.0 * _sd
+        # 오늘 하단 터치 여부 (장중 저가 기준 — 한 번 터치하면 그날은 확정)
+        _today_low = None
+        if hist_rows and hist_rows[-1].get("date") == today_str:
+            _today_low = hist_rows[-1].get("low")
+        if _today_low is None and close is not None:
+            _today_low = close
+        if tw_boll_low is not None and _today_low is not None:
+            tw_touched_today = _today_low <= tw_boll_low
+            tw_near_low = (
+                tw_state == "waiting"
+                and (not tw_touched_today)
+                and close is not None
+                and tw_boll_low <= close <= tw_boll_low * 1.02
+            )
+        # 모드: 따라잡기(대기 중 + 오늘 하단 터치) / 대기모드(상단터치~대기 중) / 일반매수
+        if tw_state == "waiting" and tw_touched_today:
+            tw_mode = "catchup"
+        elif tw_state in ("armed", "waiting"):
+            tw_mode = "waiting"
+        else:
+            tw_mode = "normal"
+        # 하단터치 시 따라잡기 주수 (오늘 일일매수 기준, 전일 종가 기준 상태)
+        # 백테스트와 동일: (건너뛴 일수+1) × 일일매수 × fill, T 상한(=잔금)으로 캡, 내림.
+        # fill은 별/평단 조건 충족 수 (둘 다 1.0 / 하나 0.5 / 없음 0).
+        # 폭락장일(오늘 현재가 기준)은 폭락매수가 우선이라 따라잡기 미적용.
+        if (
+            tw_state == "waiting"
+            and r["qty"] > 0
+            and close is not None and close > 0
+            and target_amount is not None
+            and crash_tier is None
+        ):
+            _avg_hit = close < r["avgCost"] if r["avgCost"] > 0 else False
+            _star_hit = close < buy_trigger if buy_trigger is not None else False
+            _fill = 1.0 if (_avg_hit and _star_hit) else (0.5 if (_avg_hit or _star_hit) else 0.0)
+            if _fill > 0:
+                _amt = tw_catchup_factor * target_amount * _fill
+                _amt = min(_amt, r["cash"])
+                tw_catchup_shares = int(_amt // close) if _amt > 0 else 0
+
     quarter_qty = r["qty"] / 4
 
     final_sell_qty = r["qty"]
@@ -1245,6 +1379,17 @@ def compute_guide(p, market=None):
     is_first_buy=is_first_buy,
     is_restart_day=is_restart_day,
     is_exit_day=is_exit_day,
+    # v3.4 볼린저 topwait 상태 (표시 전용)
+    topwait_state=tw_state,
+    topwait_mode=tw_mode,
+    topwait_touch_days=tw_touch_days,
+    topwait_wait_days=tw_wait_days,
+    topwait_catchup_shares=tw_catchup_shares,
+    topwait_catchup_factor=tw_catchup_factor,
+    topwait_boll_up=tw_boll_up,
+    topwait_boll_low=tw_boll_low,
+    topwait_touched_today=tw_touched_today,
+    topwait_near_low=tw_near_low,
     first_day_half_amount=(
         base1x * mult * 0.5
         if (is_first_buy and base1x is not None)
@@ -1748,7 +1893,81 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
- 
+
+# v3.4 볼린저 모드 표시줄: 일반매수 / 대기모드 / 따라잡기 (활성 모드 빨간 강조)
+if guide is not None:
+    _tw_mode = guide.get("topwait_mode", "normal")
+    _tw_n = guide.get("topwait_touch_days", 0)
+    _tw_m = guide.get("topwait_wait_days", 0)
+    _tw_q = guide.get("topwait_catchup_shares")
+    _tw_lo = guide.get("topwait_boll_low")
+    _tw_up = guide.get("topwait_boll_up")
+    _tw_crash = guide.get("crash_tier") is not None
+
+    def _tw_seg(label, active):
+        if active:
+            return (
+                'flex:1; text-align:center; padding:7px 0; border-radius:8px; '
+                'font-size:13px; font-weight:800; color:#F03E3E; '
+                'background:rgba(240,62,62,0.13); border:1.5px solid #F03E3E;'
+            )
+        return (
+            'flex:1; text-align:center; padding:7px 0; border-radius:8px; '
+            'font-size:13px; font-weight:600; color:var(--text-faint); '
+            'background:var(--surface2); border:1px solid var(--border);'
+        )
+
+    _tw_detail = ""
+    if _tw_mode == "catchup":
+        if _tw_crash:
+            _tw_detail = (
+                f"상단터치 {_tw_n}일차 · 대기 {_tw_m}일차 — 하단 터치 확인, "
+                f"오늘은 폭락장 매수가 우선이라 따라잡기는 미적용"
+            )
+        elif isinstance(_tw_q, int) and _tw_q > 0:
+            _tw_detail = (
+                f"상단터치 {_tw_n}일차 · 대기 {_tw_m}일차 — 하단 터치 확인, "
+                f"따라잡기 {_tw_q:,}주 매수 (종가 주문)"
+            )
+        else:
+            _tw_detail = f"상단터치 {_tw_n}일차 · 대기 {_tw_m}일차 — 하단 터치 확인"
+    elif _tw_mode == "waiting":
+        if guide.get("topwait_state") == "waiting":
+            if _tw_crash:
+                _tw_detail = (
+                    f"상단터치 {_tw_n}일차 · 대기 {_tw_m}일차 — "
+                    f"오늘은 폭락장 매수가 우선이라 따라잡기는 미적용"
+                )
+            elif isinstance(_tw_q, int) and _tw_q > 0:
+                _tw_detail = (
+                    f"상단터치 {_tw_n}일차 · 대기 {_tw_m}일차 — "
+                    f"하단터치 시 {_tw_q:,}주 매수 (하단 {money(_tw_lo)})"
+                )
+            else:
+                _tw_detail = (
+                    f"상단터치 {_tw_n}일차 · 대기 {_tw_m}일차 — "
+                    f"하단터치 시 매수 조건 미충족 (현재가 기준)"
+                )
+        else:  # armed: 상단 터치 후, 42일선 돌파 대기 중
+            _tw_detail = (
+                f"상단터치 {_tw_n}일차 — 42일선 돌파 시 하단 대기 진입 "
+                f"(상단 {money(_tw_up)} / 하단 {money(_tw_lo)})"
+            )
+    if _tw_detail:
+        _tw_detail += " · 전일 종가 기준"
+
+    st.markdown(
+        f"""
+        <div style="display:flex; gap:6px; margin-top:10px;">
+          <div style="{_tw_seg("일반매수", _tw_mode == "normal")}">일반매수</div>
+          <div style="{_tw_seg("대기모드", _tw_mode == "waiting")}">대기모드</div>
+          <div style="{_tw_seg("따라잡기", _tw_mode == "catchup")}">따라잡기</div>
+        </div>
+        {f'<div style="font-size:12px; color:var(--text-dim); margin-top:6px;">{_tw_detail}</div>' if _tw_detail else ""}
+        """,
+        unsafe_allow_html=True,
+    )
+
 st.markdown("<br>", unsafe_allow_html=True)
  
 # 탭 메뉴
@@ -1759,6 +1978,7 @@ tab_guide, tab_market, tab_trade, tab_history, tab_settings = st.tabs(
 # ---------------- 오늘의 가이드 ----------------
 with tab_guide:
     g = guide
+    
     # 시세 상태별 색상
     tier = g["tier"]
 
@@ -1983,7 +2203,7 @@ with tab_guide:
             f'<span style="margin-left:24px; font-size:9pt; color:#000000; font-weight:bold;">★지점 매수</span> '
             f'<span style="font-size:14pt;color:#B197FC;">{money(g["buy_trigger"])} × {shares_fmt(qty_starpoint)}</span>'
             f'<br><span style="font-size:9pt; color:#000000; font-weight:bold;">'
-            f'현재가 기준 → {money(g["close"])} × {shares_fmt(current_price_qty)}</span>'
+            f'현재가 기준  → {money(g["close"])} × {shares_fmt(current_price_qty)}</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -2032,7 +2252,7 @@ with tab_guide:
         )
         st.markdown(
             f'<div class="note">지정가 +{g["s_pct"]}% 익절은 <b>전량</b>이며 장중 매도 최우선입니다. 체결되면 사이클이 종료됩니다.<br>'
-            f'쿼터매도는 별지점에 종가(LOC)로 걸어둡니다.<br>'
+            f'쿼터매도는 별지점에 종가(LOC)로 걸어둡니다.쿼터매도와 일일매수는 별도로 주문.<br>'
             f'※ 두 주문은 시점(장중 지정가 / 종가 LOC)이 다르므로, 증권사에서 주문 가능 수량이 겹치면 지정가 전량익절을 우선하세요.</div>',
             unsafe_allow_html=True,
         )
@@ -2202,13 +2422,12 @@ with tab_trade:
         default_qty = float(int(r["qty"]))
         if guide and guide["sell_target"] is not None:
             default_price = round(guide["sell_target"], 2)
-
+ 
     # 방어: 데이터 오염으로 가이드가 음수가 되면 number_input(min_value=0.0)이
     # 앱 전체를 멈추게 함. 기본값은 0 이상으로 고정한다. (2026-10-26 IRA 9050 오입력 사례)
     default_price = max(0.0, default_price)
 
     with st.form("trade_form"):
-
         t_date = st.date_input("날짜", value=date.today(), key="t_date")
         tc1, tc2 = st.columns(2)
         with tc1:
