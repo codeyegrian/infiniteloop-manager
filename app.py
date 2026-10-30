@@ -409,7 +409,8 @@ def fetch_yahoo_market(symbol):
     """
     Yahoo Finance에서 자동으로:
       - 장중: 1분봉 최신 정규장 가격
-      - 장외: 최근 정규장 종가
+      - 장외: 최근 정규장 종가 (고정 표시)
+      - 시간외(장전/장후) 마지막 체결가는 ext_price로 별도 반환 (작은 글씨 표시용)
       - MA20: 최근 20개 완료된 일봉 종가 평균
     을 가져옵니다.
  
@@ -475,10 +476,19 @@ def fetch_yahoo_market(symbol):
     else:
         ma20_val = float(completed["Close"].tail(20).mean())
  
-    # 실시간/최근 종가
+    # 실시간/최근 종가 (정규장 가격 — 큰 글씨 표시용)
     live_price = None
     live_timestamp = None
     source_label = "Yahoo 최근 종가"
+
+    # 시간외(장전/장후) 가격 — 정규장 가격 옆에 작은 글씨로 별도 표시한다.
+    # 정규장 가격(live_price)은 건드리지 않는다.
+    ext_price = None
+    ext_label = None
+    ext_timestamp = None
+
+    # 야간(오버나이트 20:00~04:00 ET) 가격 — 역시 별도 표시 전용.
+    on_price = None
  
     if market_open:
         try:
@@ -499,6 +509,62 @@ def fetch_yahoo_market(symbol):
                     source_label = "Yahoo 장중 1분 시세"
         except Exception:
             live_price = None
+
+    # 정규장이 아닐 때: 시간외(장전/장후) 마지막 체결가를 별도로 가져온다.
+    # 마지막 정규장 종료(마지막 완료 일봉 날짜의 16:00 ET)보다 뒤에 찍힌
+    # 1분봉이 있으면 그 마지막 봉이 시간외 가격이다.
+    # 정규장 중에는 시간외 표시가 필요 없어 타지 않는다.
+    if not market_open and len(completed) > 0:
+        try:
+            ext = ticker.history(
+                period="5d",
+                interval="1m",
+                auto_adjust=False,
+                actions=False,
+                prepost=True,
+            )
+            if ext is not None and not ext.empty:
+                ext = ext.dropna(subset=["Close"])
+                if not ext.empty:
+                    ext_idx = pd.to_datetime(ext.index)
+                    if getattr(ext_idx, "tz", None) is not None:
+                        ext_idx_et = ext_idx.tz_convert(NY_TZ)
+                    else:
+                        ext_idx_et = ext_idx.tz_localize(NY_TZ)
+                    last_ext_ts = ext_idx_et[-1]
+                    last_close_dt = datetime.combine(
+                        completed.iloc[-1]["_date_et"], regular_session_close, NY_TZ
+                    )
+                    if last_ext_ts > last_close_dt:
+                        if last_ext_ts.time() >= regular_session_close:
+                            ext_label = "장후"
+                        elif last_ext_ts.time() < regular_session_open:
+                            ext_label = "장전"
+                        if ext_label is not None:
+                            ext_price = float(ext.iloc[-1]["Close"])
+                            ext_timestamp = ext.index[-1]
+        except Exception:
+            ext_price = None
+            ext_label = None
+            ext_timestamp = None
+
+    # 야간(오버나이트) 가격: 1분봉(prepost)은 20:00 ET에서 끝나지만,
+    # Yahoo 차트 메타의 fulldayPrice는 오버나이트(BOATS) 포함 최신가다.
+    # 야간 시간대(20:00~04:00 ET)에 장후 가격(없으면 정규장 종가)과
+    # 다르게 움직였으면 그 값을 야간 가격으로 본다.
+    now_t = now_et.time()
+    if now_t >= time(20, 0) or now_t < time(4, 0):
+        try:
+            fd_price = ticker.history_metadata.get("fulldayPrice")
+            if fd_price is not None:
+                fd_price = float(fd_price)
+                ref_price = ext_price
+                if ref_price is None and len(completed) > 0:
+                    ref_price = float(completed.iloc[-1]["Close"])
+                if ref_price is None or abs(fd_price - ref_price) > 0.005:
+                    on_price = fd_price
+        except Exception:
+            on_price = None
  
     if live_price is None:
         if len(completed) == 0:
@@ -546,6 +612,10 @@ def fetch_yahoo_market(symbol):
         "fetched_at": now_et.isoformat(),
         "source_label": source_label,
         "market_open": market_open,
+        "ext_price": ext_price,
+        "ext_label": ext_label,
+        "ext_timestamp": str(ext_timestamp) if ext_timestamp is not None else None,
+        "on_price": on_price,
         "history": history_rows,
     }
  
@@ -1810,6 +1880,10 @@ except Exception as exc:
         "fetched_at": None,
         "source_label": "Yahoo 연결 실패",
         "market_open": False,
+        "ext_price": None,
+        "ext_label": None,
+        "ext_timestamp": None,
+        "on_price": None,
         "history": [],
     }
     market_error = str(exc)
@@ -1978,7 +2052,7 @@ tab_guide, tab_market, tab_trade, tab_history, tab_settings = st.tabs(
 # ---------------- 오늘의 가이드 ----------------
 with tab_guide:
     g = guide
-    
+    st.markdown('<div class="card">', unsafe_allow_html=True)
     # 시세 상태별 색상
     tier = g["tier"]
 
@@ -2042,6 +2116,7 @@ with tab_guide:
 
     st.markdown("</div>", unsafe_allow_html=True)
  
+    st.markdown('<div class="card">', unsafe_allow_html=True)
     used_seed = g["cumulative_buy_amount"]
     total_seed = cfg["capital"]
     seed_pct = (used_seed / total_seed * 100) if total_seed else None
@@ -2203,7 +2278,7 @@ with tab_guide:
             f'<span style="margin-left:24px; font-size:9pt; color:#000000; font-weight:bold;">★지점 매수</span> '
             f'<span style="font-size:14pt;color:#B197FC;">{money(g["buy_trigger"])} × {shares_fmt(qty_starpoint)}</span>'
             f'<br><span style="font-size:9pt; color:#000000; font-weight:bold;">'
-            f'현재가 기준  → {money(g["close"])} × {shares_fmt(current_price_qty)}</span>'
+            f'현재가 기준 → {money(g["close"])} × {shares_fmt(current_price_qty)}</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -2252,7 +2327,7 @@ with tab_guide:
         )
         st.markdown(
             f'<div class="note">지정가 +{g["s_pct"]}% 익절은 <b>전량</b>이며 장중 매도 최우선입니다. 체결되면 사이클이 종료됩니다.<br>'
-            f'쿼터매도는 별지점에 종가(LOC)로 걸어둡니다.쿼터매도와 일일매수는 별도로 주문.<br>'
+            f'쿼터매도는 별지점에 종가(LOC)로 걸어둡니다.<br>'
             f'※ 두 주문은 시점(장중 지정가 / 종가 LOC)이 다르므로, 증권사에서 주문 가능 수량이 겹치면 지정가 전량익절을 우선하세요.</div>',
             unsafe_allow_html=True,
         )
@@ -2270,7 +2345,18 @@ with tab_market:
  
     cc1, cc2, cc3, cc4, cc5, cc6 = st.columns(6)
     with cc1:
-        kv("현재 가격", money(m["price"]))
+        price_html = money(m["price"])
+        small_parts = []
+        if m.get("ext_price") is not None and m.get("ext_label"):
+            small_parts.append(f'{m["ext_label"]} {money(m["ext_price"])}')
+        if m.get("on_price") is not None:
+            small_parts.append(f'야간 {money(m["on_price"])}')
+        if small_parts:
+            price_html += (
+                f' <span style="font-size:11px; color:#868E96;">'
+                f'{" · ".join(small_parts)}</span>'
+            )
+        kv("현재 가격", price_html)
     with cc2:
         kv(
             "MA43",
