@@ -356,14 +356,42 @@ def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None):
 def crash_tier_table(ma43val, base1x):
     """MA43 대비 추가 하락률(35/37/41%)별 폭락장 매수 단가·수량표 (참고용, 실제 발동은 determine_multiplier가 판단)"""
     rows = []
-    if ma43val is None or base1x is None:
+    if ma43val is None:
         return rows
     for th, mult in sorted(CRASH_TIERS):
         price = ma43val * (1 - th / 100)
-        amount = base1x * mult
-        qty = (amount / price) if price and price > 0 else None
+        amount = base1x * mult if base1x is not None else None
+        qty = (amount / price) if amount is not None and price and price > 0 else None
         rows.append({"tier": th, "mult": mult, "price": price, "amount": amount, "qty": qty})
     return rows
+
+def render_crash_ladder(g):
+    """폭락장 단계표(+@ 안내)를 표시한다. 일반/폭락장 가이드 공용.
+
+    폭락장 모드에서도 단계표를 그대로 보여줘서 다음 단계 가격을
+    확인할 수 있게 한다. 발동 중인 단계에는 '← 현재 단계'를 표시한다.
+    (money/shares_fmt/st는 호출 시점에 이미 정의돼 있다.)
+    """
+    rows = crash_tier_table(g["ma43"], g["base1x"])
+    if not rows:
+        return
+    active = g.get("crash_tier")
+    st.markdown(
+        '<div class="kv-label" style="margin-top:6px;">+@ 폭락장 매수 (발동시 일반매수 대신 해당 단계 1개만 종가매수)</div>',
+        unsafe_allow_html=True,
+    )
+    lines = ""
+    for row in rows:
+        is_active = active is not None and row["tier"] == active
+        mark = " <b>← 현재 단계</b>" if is_active else ""
+        weight = "font-weight:700;" if is_active else ""
+        lines += (
+            f'<div style="display:flex; justify-content:space-between; '
+            f'font-family: ui-monospace, monospace; font-size:13px; padding:3px 0; color:var(--loss); {weight}">'
+            f'<span>- {row["tier"]}% ({row["mult"]:.2f}T){mark}</span>'
+            f'<span>{money(row["price"])} × {shares_fmt(row["qty"])}</span></div>'
+        )
+    st.markdown(f'<div class="note">{lines}</div>', unsafe_allow_html=True)
  
 def phase_of(T, splits):
     # 문서: T > 분할수-1 에 도달하면 소진(리버스)모드
@@ -721,7 +749,10 @@ def recalculate_round(r, initial_capital):
     r["qty"] = 0.0
     r["avgCost"] = 0.0
     r["T"] = 0.0
-    trades = r["trades"].copy()
+    # 날짜순으로 재생한다 (안정 정렬: 같은 날짜끼리는 기존 저장 순서 유지).
+    # 과거 거래를 삭제했다가 다시 입력하면 목록 끝에 붙는데, 저장 순서(ID 순)대로
+    # 재생하면 평단·T가 시간순 계산과 달라지기 때문이다.
+    trades = sorted(r["trades"], key=lambda t: t["date"])
     r["trades"] = []
  
     # 재계산 전 종료 관련 필드 초기화 (final_sell 이 남아있으면 아래에서 다시 설정)
@@ -1770,16 +1801,38 @@ if active_id is None:
  
                         # 폭락장 발동 시에는 단독 매수 주문만 안내한다.
                         if g and g.get("crash_tier") is not None:
+                            # 단독 매수 수량은 종가매수(MOC)에 맞춰 현재가 기준으로 표시한다:
+                            # 목표금액 ÷ 현재가. 소진 구간에서는 목표금액이 계산되지 않으므로
+                            # 표시용으로만 1T = 시드 ÷ 분할수로 간주해 채운다.
+                            target_disp = g["target_amount"]
+                            if target_disp is None and cfg.get("capital") and cfg.get("splits"):
+                                target_disp = cfg["capital"] / cfg["splits"] * g["mult"]
+                            crash_qty_disp = (
+                                target_disp / g["close"]
+                                if target_disp is not None and g["close"]
+                                else None
+                            )
                             st.markdown(
                                 f'<div class="note warn"><b>🚨 폭락장 대응 (-{g["crash_tier"]}% · {g["mult"]:.2f}T)</b><br>'
-                                f'<span style="margin-left:20px;">{money(g["crash_price"])} × {shares_fmt(g["crash_qty"])} 단독 매수</span><br>'
+                                f'<span style="margin-left:20px;">현재가 기준 {money(g["close"])} × {shares_fmt(crash_qty_disp)} 단독 매수</span><br>'
                                 f'<b>🔴 매도 20%:</b> {money(g["sell_target"])} × {shares_fmt(g["final_sell_qty"])}</div>',
                                 unsafe_allow_html=True,
                             )
                         elif g and g["buy_trigger"]:
+                            # 매수 수량은 종가 주문에 맞춰 현재가 기준으로 표시한다:
+                            # 목표금액 ÷ 현재가. 소진 구간에서는 목표금액이 계산되지 않으므로
+                            # 표시용으로만 1T = 시드 ÷ 분할수로 간주해 채운다.
+                            target_disp = g["target_amount"]
+                            if target_disp is None and cfg.get("capital") and cfg.get("splits"):
+                                target_disp = cfg["capital"] / cfg["splits"] * g["mult"]
+                            buy_qty_disp = (
+                                target_disp / g["close"]
+                                if target_disp is not None and g["close"]
+                                else None
+                            )
                             st.markdown(
-                                f'<div class="note"><b>🟢 매수LOC <span class="tag buy">★ {pct(g["star_pct"])}</span></b> <br>'
-                                f'<span style="margin-left:40px;"> {money(g["buy_trigger"])}이하 × {shares_fmt(g["buy_qty"])} <br>'
+                                f'<div class="note"><b>🟢 매수 <span class="tag buy">★ {pct(g["star_pct"])}</span></b> <br>'
+                                f'<span style="margin-left:40px;">현재가 기준 {money(g["close"])} × {shares_fmt(buy_qty_disp)} <br>'
                                 f'<b>🟡 매도LOC <span class="tag buy">★ {pct(g["star_pct"])}</span></b><br>'
                                 f'<span style="margin-left:40px;">{money(g["star_point"])} × {shares_fmt(g["quarter_qty"])}<br>'
                                 f'<b>🔴 매도 20%:</b> {money(g["sell_target"])} × {shares_fmt(g["final_sell_qty"])}</div>',
@@ -1934,7 +1987,14 @@ with c3:
     # 잔금은 실제 추적되는 현금(raw cash)을 그대로 사용한다.
     kv("잔금", money(r["cash"]))
 with c4:
-    kv("미실현손익", money(unrealized), color=("var(--profit)" if (unrealized or 0) >= 0 else "var(--loss)") if unrealized is not None else None)
+    unrealized_txt = money(unrealized)
+    if unrealized is not None and r["avgCost"] > 0 and r["qty"] > 0:
+        unreal_pct = unrealized / (r["avgCost"] * r["qty"]) * 100
+        unrealized_txt = (
+            f'<span style="white-space:nowrap">{money(unrealized)} '
+            f'<span style="font-size:0.72em; opacity:0.75">({unreal_pct:+.1f}%)</span></span>'
+        )
+    kv("미실현손익", unrealized_txt, color=("var(--profit)" if (unrealized or 0) >= 0 else "var(--loss)") if unrealized is not None else None)
 with c5:
     kv("누적 실현손익", money(total_realized), color="var(--profit)" if total_realized >= 0 else "var(--loss)")
 with c6:
@@ -1962,7 +2022,7 @@ st.markdown(
       <div class="tgauge-marker" style="left:{pos}%;"></div>
     </div>
     <div style="font-family: ui-monospace, monospace; font-size:11px; color:var(--text-faint); margin-top:4px;">
-      T = {T:.2f} / {splits} · 전반전 / 후반전 / 소진모드
+      T = {T:.2f} / {splits} · 전반전 / 후반전 / 예비금
     </div>
     """,
     unsafe_allow_html=True,
@@ -1981,13 +2041,13 @@ if guide is not None:
     def _tw_seg(label, active):
         if active:
             return (
-                'flex:1; text-align:center; padding:7px 0; border-radius:8px; '
-                'font-size:13px; font-weight:800; color:#F03E3E; '
+                'flex:1; text-align:center; padding:3px 0; border-radius:6px; '
+                'font-size:12px; font-weight:800; color:#F03E3E; '
                 'background:rgba(240,62,62,0.13); border:1.5px solid #F03E3E;'
             )
         return (
-            'flex:1; text-align:center; padding:7px 0; border-radius:8px; '
-            'font-size:13px; font-weight:600; color:var(--text-faint); '
+            'flex:1; text-align:center; padding:3px 0; border-radius:6px; '
+            'font-size:12px; font-weight:600; color:var(--text-faint); '
             'background:var(--surface2); border:1px solid var(--border);'
         )
 
@@ -2032,17 +2092,17 @@ if guide is not None:
 
     st.markdown(
         f"""
-        <div style="display:flex; gap:6px; margin-top:10px;">
+        <div style="display:flex; gap:4px; margin-top:6px;">
           <div style="{_tw_seg("일반매수", _tw_mode == "normal")}">일반매수</div>
           <div style="{_tw_seg("대기모드", _tw_mode == "waiting")}">대기모드</div>
           <div style="{_tw_seg("따라잡기", _tw_mode == "catchup")}">따라잡기</div>
         </div>
-        {f'<div style="font-size:12px; color:var(--text-dim); margin-top:6px;">{_tw_detail}</div>' if _tw_detail else ""}
+        {f'<div style="font-size:11px; color:var(--text-dim); margin-top:3px;">{_tw_detail}</div>' if _tw_detail else ""}
         """,
         unsafe_allow_html=True,
     )
 
-st.markdown("<br>", unsafe_allow_html=True)
+st.markdown('<div style="height:6px;"></div>', unsafe_allow_html=True)
  
 # 탭 메뉴
 tab_guide, tab_market, tab_trade, tab_history, tab_settings = st.tabs(
@@ -2052,7 +2112,6 @@ tab_guide, tab_market, tab_trade, tab_history, tab_settings = st.tabs(
 # ---------------- 오늘의 가이드 ----------------
 with tab_guide:
     g = guide
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     # 시세 상태별 색상
     tier = g["tier"]
 
@@ -2114,9 +2173,6 @@ with tab_guide:
             color="var(--accent)"
         )
 
-    st.markdown("</div>", unsafe_allow_html=True)
- 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     used_seed = g["cumulative_buy_amount"]
     total_seed = cfg["capital"]
     seed_pct = (used_seed / total_seed * 100) if total_seed else None
@@ -2135,17 +2191,19 @@ with tab_guide:
             pct(g["star_pct"]),
             color="var(--buy)" if g["star_pct"] is not None and g["star_pct"] >= 0 else "var(--loss)",
         )
-    st.markdown("</div>", unsafe_allow_html=True)
  
-    if g["divisor_remaining"] <= 0 or g["phase"] == "소진모드":
-        st.markdown(
-            f"""<div class="card"><div class="card-title">매수 가이드 <span class="tag loss">소진모드</span></div>
-            <div class="note warn">T값이 {cfg['splits']-1} 초과(소진모드 구간)입니다. 이 앱은 <b>일반모드</b> 로직만 지원하므로,
-            소진모드(리버스모드) 매수/매도는 별도 기준으로 직접 판단해 주세요.</div></div>""",
-            unsafe_allow_html=True,
-        )
+    # 표시 전용: 소진 구간(T >= 분할수)에서는 base1x가 계산되지 않아(None) 가이드
+    # 수량이 전부 비어 보인다. 계산 로직(compute_guide)은 그대로 두고, 이 화면에서만
+    # 1T = 시드 ÷ 분할수로 간주해 수량을 채워 보여준다 (수동 주문 참고용).
+    if g["base1x"] is None and cfg.get("capital") and cfg.get("splits"):
+        g = dict(g)
+        g["base1x"] = cfg["capital"] / cfg["splits"]
+        g["target_amount"] = g["base1x"] * g["mult"]
+        g["buy_qty"] = (g["target_amount"] / g["close"]) if g["close"] else None
+        if g["crash_tier"] is not None and g["crash_price"]:
+            g["crash_qty"] = g["target_amount"] / g["crash_price"]
 
-    elif g["is_first_buy"]:
+    if g["is_first_buy"]:
         # 사이클 첫날은 하루에 한 종류만 매수한다 (이론 0-2):
         # 폭락장 카드보다 먼저 판정한다.
         if g["is_restart_day"]:
@@ -2210,11 +2268,18 @@ with tab_guide:
             f'<div class="card-title">매수 가이드 <span class="tag loss">🚨 폭락장 대응 · {g["mult"]:.2f}T</span></div>',
             unsafe_allow_html=True,
         )
+        qty_at_close = (
+            g["target_amount"] / g["close"]
+            if g["target_amount"] is not None and g["close"]
+            else None
+        )
         st.markdown(
             f'<div class="kv-value" style="font-size:17px; margin-top:8px; line-height:1.9;">'
             f'<span style="font-size:9pt; color:#000000; font-weight:bold;">MA43 대비 -{g["crash_tier"]}% 단독 매수</span> '
             f'<span style="font-size:15pt;color:#F03E3E;">{money(g["crash_price"])} × {shares_fmt(g["crash_qty"])}</span>'
-            f'<br><span style="font-size:9pt; color:var(--text-faint); font-weight:bold;">'
+            f'<br><span style="font-size:9pt; color:#000000; font-weight:bold;">'
+            f'현재가 기준 → {money(g["close"])} × {shares_fmt(qty_at_close)}</span>'
+            f'<br><span style="font-size:9pt; color:#000000; font-weight:bold;">'
             f'목표금액 {money(g["target_amount"])} (1T {money(g["base1x"])} × {g["mult"]:.2f})</span>'
             f'</div>',
             unsafe_allow_html=True,
@@ -2225,12 +2290,12 @@ with tab_guide:
             '이 매수로 일일매수금과 T값을 예외적으로 초과할 수 있으며, T가 빠르게 올라 소진(리버스)모드가 앞당겨질 수 있습니다.</div>',
             unsafe_allow_html=True,
         )
+        render_crash_ladder(g)
         st.markdown("</div>", unsafe_allow_html=True)
     else:
         # 문서 규칙: 목표금액을 항상 절반씩 나눠 "평단가"와 "★지점(별지점)"에 각각 매수한다.
         # (1.4976T / 0.7356T / 0.6831T / 1.0003T 로 목표금액 자체가 달라질 뿐, 절반씩 나누는 방식은 동일)
         half_amount = g["target_amount"] / 2 if g["target_amount"] is not None else None
-        crash_rows = crash_tier_table(g["ma43"], g["base1x"])
 
         qty_avgcost = (
             half_amount / r["avgCost"]
@@ -2283,18 +2348,7 @@ with tab_guide:
             unsafe_allow_html=True,
         )
  
-        if crash_rows:
-            st.markdown(
-                '<div class="kv-label" style="margin-top:6px;">+@ 폭락장 매수 (발동시 일반매수 대신 해당 단계 1개만 종가매수 )</div>',
-                unsafe_allow_html=True,
-            )
-            crash_lines = "".join(
-                f'<div style="display:flex; justify-content:space-between; '
-                f'font-family: ui-monospace, monospace; font-size:13px; padding:3px 0; color:var(--loss);">'
-                f'<span>- {row["tier"]}% ({row["mult"]:.2f}T)</span><span>{money(row["price"])} × {shares_fmt(row["qty"])}</span></div>'
-                for row in crash_rows
-            )
-            st.markdown(f'<div class="note">{crash_lines}</div>', unsafe_allow_html=True)
+        render_crash_ladder(g)
  
         st.markdown(
             f'<div class="note">오늘 목표매수금액 {money(g["target_amount"])} 을 절반씩 나누어 '
@@ -2573,6 +2627,10 @@ with tab_trade:
                 apply_quarter_sell(r, d_str, t_price, t_qty)
             else:
                 apply_final_sell(current_p, r, d_str, t_price, t_qty)
+            if ttype in ("buy", "quarter_sell"):
+                # 과거 날짜 거래를 추가한 경우에도 날짜순으로 다시 계산해
+                # 평단·T가 입력 순서에 영향받지 않게 한다.
+                recalculate_round(r, r["startCapital"])
             persist()
             st.success("기록이 추가되었습니다.")
             st.rerun()
