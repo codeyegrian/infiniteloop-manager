@@ -679,6 +679,17 @@ def apply_buy(r, dt, price, qty, t_delta):
         "cashAfter": r["cash"], "pnl": None,
     })
  
+def apply_deposit(r, dt, amount):
+    """자금 추가 (예비금): 잔금만 늘린다. T·평단·보유수량은 변하지 않는다.
+    price 칸에는 금액을 넣어 히스토리 표시·삭제 라벨이 금액으로 읽히게 한다."""
+    r["cash"] += amount
+    r["trades"].append({
+        "id": len(r["trades"]) + 1,
+        "date": dt, "type": "deposit", "price": amount, "qty": 0.0, "amount": amount,
+        "tDelta": 0.0, "tAfter": r["T"], "avgAfter": r["avgCost"],
+        "cashAfter": r["cash"], "pnl": None,
+    })
+
 def apply_quarter_sell(r, dt, price, qty):
     """
     문서 규칙:
@@ -770,6 +781,8 @@ def recalculate_round(r, initial_capital):
  
         if ttype == "buy":
             apply_buy(r, dt, price, qty, t_delta)
+        elif ttype == "deposit":
+            apply_deposit(r, dt, t["amount"])
         elif ttype == "quarter_sell":
             apply_quarter_sell(r, dt, price, qty)
         elif ttype == "final_sell":
@@ -1191,7 +1204,24 @@ def compute_guide(p, market=None):
     T = r["T"]
     current_T = T
 
-    phase = phase_of(T, splits)
+    # 예비금 모드 (2026-11-10 에이든 확정 스펙):
+    # SOXL 20분할에서 T가 20을 넘으면 25분할 틀로 자동 전환하고,
+    # T가 20 이하로 내려오면 20분할로 복귀한다 (양방향).
+    # 판정은 현재 T만으로 결정되므로 재계산 재생에서도 같은 지점에서 갈린다.
+    # 25분할 틀에서는 (25 - T)가 양수로 유지돼 1T 계산이 음수로 깨지지 않는다.
+    # 단, 별지점 계산은 모드와 무관하게 원래 20분할식(20 - 2T)을 유지한다
+    # (에이든 결정 — 쿼터매도 기준선은 사이클 도중에 바꾸지 않는다).
+    reserve_mode = (symbol == "SOXL" and splits == 20 and T > 20)
+    eff_splits = 25 if reserve_mode else splits
+
+    # 예비금 사용금액 = 잔금이 음수가 된 만큼, 즉 라운드 시드를 초과해 쓴 금액
+    # (에이든 정의 — 예비금에 별도로 정해둔 금액은 없고, 프레임만 25T까지 열려 있다.
+    #  참고 기준을 굳이 잡으면 시드의 20%. '자금 추가'를 기록하면 잔금이 올라
+    #  사용금액이 그만큼 줄어드는 구조로 연동된다.)
+    reserve_used = max(0.0, -r["cash"])
+    reserve_base = r["startCapital"] * 0.20
+
+    phase = "예비금모드" if reserve_mode else phase_of(T, eff_splits)
 
     is_first_buy = (
         r["qty"] <= 1e-9
@@ -1252,7 +1282,7 @@ def compute_guide(p, market=None):
         buy_trigger,
     )
 
-    divisor_remaining = splits - T
+    divisor_remaining = eff_splits - T
 
     # ---------------------------------------------------------
     # 1회 매수액
@@ -1497,6 +1527,12 @@ def compute_guide(p, market=None):
         else None
     ),
     divisor_remaining=divisor_remaining,
+
+    # 예비금 모드 (25분할 틀 전환 상태와 예비금 사용금액)
+    reserve_mode=reserve_mode,
+    eff_splits=eff_splits,
+    reserve_used=reserve_used,
+    reserve_base=reserve_base,
 
     market=market,
 )
@@ -1973,7 +2009,8 @@ position_value = (
 total_asset = r["cash"] + position_value + pending_profit
  
 st.markdown(
-    f'<div class="round-badge">{cfg["symbol"]} · {cfg["splits"]}분할 · Round #{r["id"]} · {phase_of(guide["current_T"], cfg["splits"]) if guide else "—"}</div>',
+    f'<div class="round-badge">{cfg["symbol"]} · {cfg["splits"]}분할 · Round #{r["id"]} · {guide["phase"] if guide else "—"}'
+    f'{" · 25분할 틀 적용 중" if guide and guide.get("reserve_mode") else ""}</div>',
     unsafe_allow_html=True,
 )
  
@@ -2005,9 +2042,14 @@ if pending_profit > 0:
         f"ℹ️ 잔금에는 쿼터매도 익절 초과분 {money(pending_profit)} 이 포함되어 있지 않습니다 "
         f"(문서 규칙). 총자산에는 포함되며, 라운드 종료 시 복리로 재투입됩니다."
     )
+if guide and (guide.get("reserve_used", 0) > 0 or guide.get("reserve_mode")):
+    st.caption(
+        f"💰 예비금 사용금액 {money(guide.get('reserve_used'))} "
+        f"(예비금 참고 기준: 시드의 20% = {money(guide.get('reserve_base'))})"
+    )
 # --------------------------------------------------------------
  
-splits = cfg["splits"]
+splits = (guide.get("eff_splits") or cfg["splits"]) if guide else cfg["splits"]
 T = guide["current_T"] if guide else 0.0
 pos = max(0, min(100, T / splits * 100))
 z1 = (splits / 2) / splits * 100
@@ -2195,7 +2237,9 @@ with tab_guide:
     # 표시 전용: 소진 구간(T >= 분할수)에서는 base1x가 계산되지 않아(None) 가이드
     # 수량이 전부 비어 보인다. 계산 로직(compute_guide)은 그대로 두고, 이 화면에서만
     # 1T = 시드 ÷ 분할수로 간주해 수량을 채워 보여준다 (수동 주문 참고용).
-    if g["base1x"] is None and cfg.get("capital") and cfg.get("splits"):
+    # 예비금 모드에서 자금 추가 전(잔금 음수)이면 base1x가 음수가 되므로 그 경우도
+    # 같은 표시용 1T로 대체한다 — 실제 1T 계산은 자금 추가를 기록한 뒤부터 적용된다.
+    if (g["base1x"] is None or g["base1x"] <= 0) and cfg.get("capital") and cfg.get("splits"):
         g = dict(g)
         g["base1x"] = cfg["capital"] / cfg["splits"]
         g["target_amount"] = g["base1x"] * g["mult"]
@@ -2542,9 +2586,9 @@ with tab_trade:
     
  
     trade_type_label = st.radio(
-        "거래 유형", ["매수", "쿼터매도", "지정가매도 (전량, 라운드 종료)"], horizontal=True
+        "거래 유형", ["매수", "쿼터매도", "지정가매도 (전량, 라운드 종료)", "자금 추가 (예비금)"], horizontal=True
     )
-    type_map = {"매수": "buy", "쿼터매도": "quarter_sell", "지정가매도 (전량, 라운드 종료)": "final_sell"}
+    type_map = {"매수": "buy", "쿼터매도": "quarter_sell", "지정가매도 (전량, 라운드 종료)": "final_sell", "자금 추가 (예비금)": "deposit"}
     ttype = type_map[trade_type_label]
  
     default_price = 0.0
@@ -2558,7 +2602,7 @@ with tab_trade:
         default_qty = float(int(r["qty"] / 4))  # 정수 내림 (문서 규칙)
         if guide and guide["star_point"] is not None:
             default_price = round(guide["star_point"], 2)
-    else:
+    elif ttype == "final_sell":
         default_qty = float(int(r["qty"]))
         if guide and guide["sell_target"] is not None:
             default_price = round(guide["sell_target"], 2)
@@ -2569,11 +2613,20 @@ with tab_trade:
 
     with st.form("trade_form"):
         t_date = st.date_input("날짜", value=date.today(), key="t_date")
-        tc1, tc2 = st.columns(2)
-        with tc1:
-            t_price = st.number_input("체결가 ($)", min_value=0.0, value=default_price, step=0.01, format="%.2f")
-        with tc2:
-            t_qty = st.number_input("체결수량", min_value=0.0, value=default_qty, step=0.0001, format="%.4f")
+        if ttype == "deposit":
+            t_price = st.number_input("추가 금액 ($)", min_value=0.0, value=0.0, step=100.0, format="%.2f")
+            t_qty = 0.0
+            st.markdown(
+                '<div class="note">자금 추가: 입력한 금액이 잔금에 더해집니다. T·평단·보유수량은 변하지 않습니다. '
+                '원래 시드를 넘는 추가분은 예비금으로 표시되고, T가 20을 넘으면 25분할 틀(예비금 모드)이 자동 적용됩니다.</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            tc1, tc2 = st.columns(2)
+            with tc1:
+                t_price = st.number_input("체결가 ($)", min_value=0.0, value=default_price, step=0.01, format="%.2f")
+            with tc2:
+                t_qty = st.number_input("체결수량", min_value=0.0, value=default_qty, step=0.0001, format="%.4f")
  
         t_delta = None
         if ttype == "buy":
@@ -2581,13 +2634,24 @@ with tab_trade:
             suggested_t = None
             if guide and guide["target_amount"] and guide["target_amount"] > 0:
                 suggested_t = guide["mult"] * (amount_preview / guide["target_amount"])
+            if suggested_t is None and amount_preview > 0:
+                # 소진·예비금 모드에서는 목표금액이 없거나 음수라 위 제안이 비므로,
+                # 표시용 1T(시드 ÷ 분할수) 기준으로 제안한다 (체결금액 ÷ 1T).
+                _cfg = current_p["config"] or {}
+                _disp_1t = None
+                if guide and guide.get("base1x") and guide["base1x"] > 0:
+                    _disp_1t = guide["base1x"]
+                elif _cfg.get("capital") and _cfg.get("splits"):
+                    _disp_1t = _cfg["capital"] / _cfg["splits"]
+                if _disp_1t:
+                    suggested_t = amount_preview / _disp_1t
             t_delta = st.number_input(
                 "T 증가값 (자동 제안값, 필요시 직접 수정)",
                 value=round(suggested_t, 4) if suggested_t is not None else 0.0,
                 step=0.0001, format="%.4f",
             )
             st.markdown(
-                f'<div class="note">제안값 = 오늘 배수({guide["mult"] if guide else 1.0:.2f}T) × (체결금액 ÷ 오늘 목표매수금액).</div>',
+                '<div class="note">제안값 = 체결금액 ÷ 1T 금액. 소진·예비금 모드에서는 표시용 1T(시드 ÷ 분할수) 기준입니다.</div>',
                 unsafe_allow_html=True,
             )
         elif ttype == "quarter_sell":
@@ -2606,14 +2670,16 @@ with tab_trade:
                 + '</div>',
                 unsafe_allow_html=True,
             )
-        else:
+        elif ttype == "final_sell":
             st.markdown('<div class="note">지정가매도(전량)는 라운드를 종료합니다. 실현손익이 집계되고, '
                         '잔금과 그동안 편입되지 않았던 쿼터매도 익절 초과분을 합산해 새 라운드가 자동으로 시작됩니다.</div>', unsafe_allow_html=True)
  
         submitted = st.form_submit_button("기록 추가", use_container_width=True)
  
     if submitted:
-        if t_price <= 0 or t_qty <= 0:
+        if ttype == "deposit" and t_price <= 0:
+            st.error("추가 금액을 올바르게 입력하세요.")
+        elif ttype != "deposit" and (t_price <= 0 or t_qty <= 0):
             st.error("가격과 수량을 올바르게 입력하세요.")
         elif ttype in ("quarter_sell", "final_sell") and t_qty > r["qty"] + 1e-9:
             st.error("보유수량보다 많습니다.")
@@ -2623,11 +2689,13 @@ with tab_trade:
             d_str = t_date.isoformat()
             if ttype == "buy":
                 apply_buy(r, d_str, t_price, t_qty, t_delta or 0.0)
+            elif ttype == "deposit":
+                apply_deposit(r, d_str, t_price)
             elif ttype == "quarter_sell":
                 apply_quarter_sell(r, d_str, t_price, t_qty)
             else:
                 apply_final_sell(current_p, r, d_str, t_price, t_qty)
-            if ttype in ("buy", "quarter_sell"):
+            if ttype in ("buy", "quarter_sell", "deposit"):
                 # 과거 날짜 거래를 추가한 경우에도 날짜순으로 다시 계산해
                 # 평단·T가 입력 순서에 영향받지 않게 한다.
                 recalculate_round(r, r["startCapital"])
@@ -2686,14 +2754,14 @@ with tab_history:
                             )
                         if rr["trades"]:
                             rows = []
-                            type_label = {"buy": "매수", "quarter_sell": "쿼터매도", "final_sell": "지정가매도"}
+                            type_label = {"buy": "매수", "quarter_sell": "쿼터매도", "final_sell": "지정가매도", "deposit": "자금 추가"}
                             for idx, t in enumerate(rr["trades"]):
                                 rows.append({
                                     "ID": t.get("id", idx + 1),
                                     "날짜": t["date"],
                                     "유형": type_label[t["type"]],
-                                    "가격": round(t["price"], 2),
-                                    "수량": round(t["qty"], 4),
+                                    "가격": round(t["price"], 2) if t["type"] != "deposit" else "—",
+                                    "수량": round(t["qty"], 4) if t["type"] != "deposit" else "—",
                                     "금액": round(t["amount"], 2),
                                     "T": round(t["tAfter"], 3),
                                     "평단": round(t["avgAfter"], 2),
@@ -2732,7 +2800,7 @@ with tab_history:
                                     del_trade_id = st.selectbox(
                                         "삭제할 매매 기록 선택",
                                         options=[t.get("id", i+1) for i, t in enumerate(rr["trades"])],
-                                        format_func=lambda tid: next(f"ID {tid}: {t['date']} {type_label[t['type']]} ({money(t['price'])}, {t['qty']}주)" for i, t in enumerate(rr["trades"]) if t.get("id", i+1) == tid),
+                                        format_func=lambda tid: next(f"ID {tid}: {t['date']} {type_label[t['type']]} ({money(t['amount']) if t['type'] == 'deposit' else money(t['price']) + ', ' + str(t['qty']) + '주'})" for i, t in enumerate(rr["trades"]) if t.get("id", i+1) == tid),
                                         key=f"del_trade_sel_{rr['id']}"
                                     )
                                 with del_col2:
