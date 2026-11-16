@@ -7,7 +7,10 @@
         "symbol": "SOXL",
         "splits": 20,
         "capital": 21253.19,
-        "compounding": true
+        "compounding": true,
+        "version": "v3.3",
+        "is_reserve": false,
+        "reserve_parent": null
       },
       "price_history": [],
       "rounds": [
@@ -949,7 +952,10 @@
         "symbol": "SOXL",
         "splits": 20,
         "capital": 82218.69,
-        "compounding": true
+        "compounding": true,
+        "version": "v3.3",
+        "is_reserve": false,
+        "reserve_parent": null
       },
       "price_history": [],
       "rounds": [
@@ -2489,7 +2495,34 @@
           "status": "active"
         }
       ]
+    },
+    {
+      "id": 5,
+      "name": "본계좌 예비금",
+      "config": {
+        "symbol": "SOXL",
+        "splits": 10,
+        "capital": 20000.0,
+        "compounding": true,
+        "version": "v3.5",
+        "is_reserve": true,
+        "reserve_parent": "soxl 20분할"
+      },
+      "price_history": [],
+      "rounds": [
+        {
+          "id": 1,
+          "startDate": "2026-11-16",
+          "startCapital": 20000.0,
+          "cash": 20000.0,
+          "qty": 0.0,
+          "avgCost": 0.0,
+          "T": 0.0,
+          "trades": [],
+          "status": "active"
+        }
+      ]
     }
   ],
-  "active_portfolio_id": 4
+  "active_portfolio_id": 5
 }
