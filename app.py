@@ -220,7 +220,10 @@ DEFAULT_DATA = {
                 "symbol": "SOXL",
                 "splits": 40,
                 "capital": 20000.0,
-                "compounding": True
+                "compounding": True,
+                "version": "v3.3",
+                "is_reserve": False,
+                "reserve_parent": None
             },
             "price_history": [],
             "rounds": []
@@ -253,6 +256,13 @@ def normalize_data(d):
     if "active_portfolio_id" not in d:
         portfolios = d.get("portfolios", [])
         d["active_portfolio_id"] = portfolios[0]["id"] if portfolios else None
+    # 포트폴리오 config 기본값 보정 (구버전 데이터·본계좌는 v3.3 규칙 유지).
+    for _p in d.get("portfolios", []):
+        _cfg = _p.get("config")
+        if isinstance(_cfg, dict):
+            _cfg.setdefault("version", "v3.3")
+            _cfg.setdefault("is_reserve", False)
+            _cfg.setdefault("reserve_parent", None)
     return d
  
  
@@ -275,7 +285,10 @@ def save_data(data):
 def star_percent(symbol, splits, T):
     if symbol == "TQQQ":
         return (15 - 1.5 * T) if splits == 20 else (15 - 0.75 * T)
-    return (20 - 2 * T) if splits == 20 else (20 - T)
+    # 별% 기울기 k = 40/분할 (20분할 k=2.0, 10분할 k=4.0, 40분할 k=1.0).
+    # 20분할·40분할은 기존 식과 동일한 값이 나온다 (본계좌 v3.3 규칙 무변경).
+    k = 40.0 / splits if splits else 2.0
+    return 20 - k * T
  
 def sell_profit_pct(symbol):
     # 전량익절은 평단 × 1.20 고정 지정가 (트레일링 없음)
@@ -288,9 +301,15 @@ def ma42(history):
     return sum(p["close"] for p in last42) / 42
  
 # 폭락장 단계 정의 (MA43 대비 하락률, 배수) — 깊은 단계가 앞에 오도록 정렬
+# v3.3/v3.5: 3단계 (35/37/41%). v3.7: 2단계 (38/53%, P112).
 CRASH_TIERS = [(41, 2.5), (37, 2.1), (35, 1.95)]
+CRASH_TIERS_V37 = [(53, 3.0), (38, 1.95)]
+
+def crash_tiers_for(version):
+    """버전별 폭락장 티어표. v3.7만 2단계(P112), 나머지는 3단계(기본)."""
+    return CRASH_TIERS_V37 if str(version or "").strip().lower() == "v3.7" else CRASH_TIERS
  
-def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None):
+def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None, crash_tiers=None):
     """
     추추무매 매수 로직
  
@@ -302,9 +321,12 @@ def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None):
     2-2) MA42 아래 + 20일전 종가보다 낮음: 1.0003T
  
     폭락장 조건은 위 일반 매수 로직보다 항상 최우선:
-    MA43 대비 -35% 이상  -> 1.95T
-    MA43 대비 -37% 이상  -> 2.10T
-    MA43 대비 -41% 이상  -> 2.50T
+    v3.3/v3.5 (3단계): MA43 대비 -35% 이상  -> 1.95T
+                      MA43 대비 -37% 이상  -> 2.10T
+                      MA43 대비 -41% 이상  -> 2.50T
+    v3.7 (2단계, P112): MA43 대비 -38% 이상 -> 1.95T
+                      MA43 대비 -53% 이상  -> 3.00T
+    crash_tiers를 지정하지 않으면 기본 3단계(v3.3/v3.5)를 쓴다.
  
     ※ 1.4976T / 0.7356T / 0.6831T / 1.0003T 는 각각
        별지점 매수와 평단매수에 절반씩 배분한다.
@@ -320,7 +342,7 @@ def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None):
     # 폭락장 조건 최우선
     # ---------------------------------------------------------
     drawdown = (ma43val - close) / ma43val * 100
-    for th, mult in CRASH_TIERS:
+    for th, mult in (crash_tiers if crash_tiers is not None else CRASH_TIERS):
         if drawdown >= th:
             return mult, f"MA43 대비 -{th}% 이상 구간 (폭락장 대응)", th
  
@@ -353,12 +375,12 @@ def determine_multiplier(close, ma42val, ma43val, close_20d_ago=None):
     # 2-2 하락추세: 0.50015T 별지점 + 0.50015T 평단
     return 1.0003, "MA42 아래 + 20일전 종가 아래 (하락추세)", None
  
-def crash_tier_table(ma43val, base1x):
+def crash_tier_table(ma43val, base1x, tiers=None):
     """MA43 대비 추가 하락률(35/37/41%)별 폭락장 매수 단가·수량표 (참고용, 실제 발동은 determine_multiplier가 판단)"""
     rows = []
     if ma43val is None:
         return rows
-    for th, mult in sorted(CRASH_TIERS):
+    for th, mult in sorted(tiers if tiers is not None else CRASH_TIERS):
         price = ma43val * (1 - th / 100)
         amount = base1x * mult if base1x is not None else None
         qty = (amount / price) if amount is not None and price and price > 0 else None
@@ -372,7 +394,7 @@ def render_crash_ladder(g):
     확인할 수 있게 한다. 발동 중인 단계에는 '← 현재 단계'를 표시한다.
     (money/shares_fmt/st는 호출 시점에 이미 정의돼 있다.)
     """
-    rows = crash_tier_table(g["ma43"], g["base1x"])
+    rows = crash_tier_table(g["ma43"], g["base1x"], g.get("crash_tiers"))
     if not rows:
         return
     active = g.get("crash_tier")
@@ -406,6 +428,21 @@ def active_round(p):
     if not rounds:
         return None
     return rounds[-1] if rounds[-1]["status"] == "active" else None
+
+
+def reserve_parent_t(data, p):
+    """예비금 포트폴리오가 연동하는 본계좌(부모)의 활성 라운드 T.
+    부모를 찾지 못하면 None (활성화 판정 불가 — 호출 측에서 활성으로 간주)."""
+    if not isinstance(data, dict):
+        return None
+    parent_name = (p.get("config") or {}).get("reserve_parent")
+    if not parent_name:
+        return None
+    for _pp in data.get("portfolios", []):
+        if _pp.get("name") == parent_name:
+            _r = active_round(_pp)
+            return _r["T"] if _r is not None else None
+    return None
  
  
 def unbanked_profit(r):
@@ -690,6 +727,16 @@ def apply_deposit(r, dt, amount):
         "cashAfter": r["cash"], "pnl": None,
     })
 
+def apply_pending_buy(r, dt, qty):
+    """미체결 매수 주문 기록 (체결가 미확인 시). 장부(잔금·보유·평단·T)에 영향 없음.
+    체결가 확인 후에는 이 기록을 삭제하고 일반 매수로 다시 기록한다."""
+    r["trades"].append({
+        "id": len(r["trades"]) + 1,
+        "date": dt, "type": "pending_buy", "price": None, "qty": qty, "amount": None,
+        "tDelta": 0.0, "tAfter": r["T"], "avgAfter": r["avgCost"],
+        "cashAfter": r["cash"], "pnl": None,
+    })
+
 def apply_quarter_sell(r, dt, price, qty):
     """
     문서 규칙:
@@ -803,6 +850,15 @@ def recalculate_round(r, initial_capital):
             r["closedDate"] = dt
             r["realizedPnl"] = sum(tr["pnl"] for tr in r["trades"] if tr["pnl"] is not None)
             r["finalCapital"] = r["cash"] + pending_profit
+        elif ttype == "pending_buy":
+            # 미체결 매수 주문: 장부에 영향 없음 — 기록만 유지한다.
+            r["trades"].append({
+                "id": len(r["trades"]) + 1,
+                "date": dt, "type": "pending_buy", "price": price, "qty": qty,
+                "amount": t.get("amount"), "tDelta": 0.0,
+                "tAfter": r["T"], "avgAfter": r["avgCost"],
+                "cashAfter": r["cash"], "pnl": None,
+            })
  
 # =============================================================================
 # Excel 거래내역 가져오기
@@ -1118,13 +1174,17 @@ def determine_buy_action(current_price, avg_cost, star_point):
 
     return "계산 불가"
 
-def compute_guide(p, market=None):
+def compute_guide(p, market=None, reserve_parent_T=None):
     r = active_round(p)
     if r is None or p["config"] is None:
         return None
 
     cfg = p["config"]
     splits, symbol = cfg["splits"], cfg["symbol"]
+    # 예비금 포트폴리오 규칙 (본계좌는 기본값 v3.3으로 기존 동작 유지).
+    version = str(cfg.get("version", "v3.3") or "v3.3").strip().lower()
+    is_reserve = bool(cfg.get("is_reserve", False))
+    crash_tiers = crash_tiers_for(version)
 
     # Yahoo Finance 자동 시세
     if market is None:
@@ -1195,7 +1255,8 @@ def compute_guide(p, market=None):
         close,
         ma42val,
         ma43val,
-        close_20d_ago
+        close_20d_ago,
+        crash_tiers
     )
 
     # =========================================================
@@ -1211,7 +1272,7 @@ def compute_guide(p, market=None):
     # 25분할 틀에서는 (25 - T)가 양수로 유지돼 1T 계산이 음수로 깨지지 않는다.
     # 단, 별지점 계산은 모드와 무관하게 원래 20분할식(20 - 2T)을 유지한다
     # (에이든 결정 — 쿼터매도 기준선은 사이클 도중에 바꾸지 않는다).
-    reserve_mode = (symbol == "SOXL" and splits == 20 and T > 20)
+    reserve_mode = (symbol == "SOXL" and splits == 20 and T > 20 and not is_reserve)
     eff_splits = 25 if reserve_mode else splits
 
     # 예비금 사용금액 = 잔금이 음수가 된 만큼, 즉 라운드 시드를 초과해 쓴 금액
@@ -1459,7 +1520,13 @@ def compute_guide(p, market=None):
             _star_hit = close < buy_trigger if buy_trigger is not None else False
             _fill = 1.0 if (_avg_hit and _star_hit) else (0.5 if (_avg_hit or _star_hit) else 0.0)
             if _fill > 0:
-                _amt = tw_catchup_factor * target_amount * _fill
+                if version == "v3.7":
+                    # v3.7 (67번 확정형): 적립금은 대기일 1일당 1T씩 금액 적립,
+                    # 따라잡기 당일분은 그날 비중 그대로.
+                    _amt = tw_wait_days * (base1x or 0.0) + target_amount * _fill
+                else:
+                    # v3.3/v3.5: 따라잡기 = (건너뛴 일수+1) × 당일 일일매수 × fill.
+                    _amt = tw_catchup_factor * target_amount * _fill
                 _amt = min(_amt, r["cash"])
                 tw_catchup_shares = int(_amt // close) if _amt > 0 else 0
 
@@ -1533,6 +1600,13 @@ def compute_guide(p, market=None):
     eff_splits=eff_splits,
     reserve_used=reserve_used,
     reserve_base=reserve_base,
+
+    # 예비금 포트폴리오 규칙·연동 상태
+    version=version,
+    is_reserve=is_reserve,
+    crash_tiers=crash_tiers,
+    reserve_parent_T=reserve_parent_T,
+    reserve_active=(True if reserve_parent_T is None else reserve_parent_T >= 20) if is_reserve else None,
 
     market=market,
 )
@@ -1759,7 +1833,7 @@ if active_id is None:
                     if cfg:
                         try:
                             mkt = fetch_yahoo_market(cfg["symbol"])
-                            g = compute_guide(p, mkt)
+                            g = compute_guide(p, mkt, reserve_parent_t(data, p))
                         except Exception:
                             g = None
  
@@ -1887,10 +1961,27 @@ if active_id is None:
     # 2. 새로운 포트폴리오 추가 버튼 (+)
     st.markdown("---")
     with st.expander("➕ 새 포트폴리오 추가하기", expanded=not bool(portfolios)):
+        _new_kind = st.radio("포트폴리오 종류", ["본계좌", "예비금"], horizontal=True, key="new_pf_kind")
+        _is_reserve_new = (_new_kind == "예비금")
         with st.form("add_portfolio_form"):
             new_p_name = st.text_input("포트폴리오 이름", placeholder="예: SOXL 서브 계좌, TQQQ 연금계좌")
             p_symbol = st.selectbox("종목", ["TQQQ", "SOXL"])
-            p_splits = st.selectbox("분할 수", [20, 40], index=1)
+            if _is_reserve_new:
+                # 예비금: 버전(v3.5/v3.7)·분할(10/20)·연동 본계좌를 고른다.
+                # 본계좌 T≥20(소진)일 때만 예비금이 활성화된다.
+                p_version = st.selectbox("버전 (예비금 규칙)", ["v3.5", "v3.7"], index=0)
+                p_splits = st.selectbox("분할 수", [10, 20, 40], index=0)
+                _parent_names = [pp["name"] for pp in portfolios if not (pp.get("config") or {}).get("is_reserve")]
+                if _parent_names:
+                    _def_parent = _parent_names.index("soxl 20분할") if "soxl 20분할" in _parent_names else 0
+                    p_parent = st.selectbox("연동 본계좌 (T≥20일 때 예비금 활성화)", _parent_names, index=_def_parent)
+                else:
+                    p_parent = None
+                    st.caption("연동할 본계좌가 없습니다. 본계좌를 먼저 만드세요.")
+            else:
+                p_version = "v3.3"
+                p_splits = st.selectbox("분할 수", [20, 40], index=1)
+                p_parent = None
             p_capital = st.number_input("운용 원금 ($)", min_value=0.0, value=20000.0, step=100.0)
             p_compounding = st.radio("라운드 종료 후 재투입 방식", ["복리 (수익 재투입)", "단리 (원금 고정)"]) == "복리 (수익 재투입)"
             add_p_submitted = st.form_submit_button("포트폴리오 생성하기", use_container_width=True)
@@ -1898,6 +1989,8 @@ if active_id is None:
         if add_p_submitted:
             if not new_p_name:
                 st.error("포트폴리오 이름을 입력해주세요.")
+            elif _is_reserve_new and not p_parent:
+                st.error("예비금은 연동할 본계좌가 필요합니다.")
             else:
                 new_id = max([p["id"] for p in portfolios], default=0) + 1
                 new_p = {
@@ -1907,7 +2000,10 @@ if active_id is None:
                         "symbol": p_symbol,
                         "splits": p_splits,
                         "capital": p_capital,
-                        "compounding": p_compounding
+                        "compounding": p_compounding,
+                        "version": p_version,
+                        "is_reserve": _is_reserve_new,
+                        "reserve_parent": p_parent
                     },
                     "price_history": [],
                     "rounds": []
@@ -1934,14 +2030,24 @@ if current_p is None:
 # 설정 없으면 초기화
 if current_p["config"] is None:
     st.title(f"⚙️ {current_p['name']} 초기 설정")
+    _setup_kind = st.radio("포트폴리오 종류", ["본계좌", "예비금"], horizontal=True, key="setup_pf_kind")
+    _setup_is_reserve = (_setup_kind == "예비금")
     with st.form("setup_form"):
         symbol = st.selectbox("종목", ["TQQQ", "SOXL"])
-        splits = st.selectbox("분할 수", [20, 40], index=1)
+        if _setup_is_reserve:
+            setup_version = st.selectbox("버전 (예비금 규칙)", ["v3.5", "v3.7"], index=0)
+            splits = st.selectbox("분할 수", [10, 20, 40], index=0)
+            _setup_parents = [pp["name"] for pp in data["portfolios"] if pp["id"] != current_p["id"] and not (pp.get("config") or {}).get("is_reserve")]
+            setup_parent = st.selectbox("연동 본계좌 (T≥20일 때 예비금 활성화)", _setup_parents, index=_setup_parents.index("soxl 20분할") if "soxl 20분할" in _setup_parents else 0) if _setup_parents else None
+        else:
+            setup_version = "v3.3"
+            splits = st.selectbox("분할 수", [20, 40], index=1)
+            setup_parent = None
         capital = st.number_input("운용 원금 ($)", min_value=0.0, value=20000.0, step=100.0)
         compounding = st.radio("라운드 종료 후 재투입 방식", ["복리 (수익 재투입)", "단리 (원금 고정)"]) == "복리 (수익 재투입)"
         submitted = st.form_submit_button("시작하기", use_container_width=True)
     if submitted:
-        current_p["config"] = {"symbol": symbol, "splits": splits, "capital": capital, "compounding": compounding}
+        current_p["config"] = {"symbol": symbol, "splits": splits, "capital": capital, "compounding": compounding, "version": setup_version, "is_reserve": _setup_is_reserve, "reserve_parent": setup_parent}
         start_new_round(current_p, capital, date.today().isoformat())
         persist()
         st.rerun()
@@ -1977,7 +2083,7 @@ except Exception as exc:
     }
     market_error = str(exc)
  
-guide = compute_guide(current_p, market)
+guide = compute_guide(current_p, market, reserve_parent_t(data, current_p))
  
 # 포트폴리오 상단 콕핏
 st.title(f"📈 {current_p['name']}")
@@ -2154,6 +2260,25 @@ tab_guide, tab_market, tab_trade, tab_history, tab_settings = st.tabs(
 # ---------------- 오늘의 가이드 ----------------
 with tab_guide:
     g = guide
+
+    # 예비금 포트폴리오: 연동 본계좌 소진 상태 표시 (본계좌 T≥20일 때만 활성).
+    if g is not None and g.get("is_reserve"):
+        _rp_T = g.get("reserve_parent_T")
+        _rp_name = cfg.get("reserve_parent") or "본계좌"
+        _rp_T_txt = f"T={_rp_T:.2f}" if _rp_T is not None else "T 확인 불가"
+        if g.get("reserve_active"):
+            st.markdown(
+                f'<div class="note"><b>🛡️ 예비금 활성</b> — 연동 {_rp_name} {_rp_T_txt} (≥20 소진) · '
+                f'버전 {g.get("version", "v3.5")} · {cfg.get("splits")}분할 · 1T {money(cfg.get("capital", 0) / cfg["splits"]) if cfg.get("splits") else "—"}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<div class="note warn"><b>⏸️ 예비금 대기</b> — 연동 {_rp_name} {_rp_T_txt} (&lt;20, 소진 해제) · '
+                f'보유 중이면 전량 청산 후 대기하세요. 신규 매수는 하지 않습니다.</div>',
+                unsafe_allow_html=True,
+            )
+
     # 시세 상태별 색상
     tier = g["tier"]
 
@@ -2586,9 +2711,9 @@ with tab_trade:
     
  
     trade_type_label = st.radio(
-        "거래 유형", ["매수", "쿼터매도", "지정가매도 (전량, 라운드 종료)", "자금 추가 (예비금)"], horizontal=True
+        "거래 유형", ["매수", "쿼터매도", "지정가매도 (전량, 라운드 종료)", "자금 추가 (예비금)", "미체결 매수 주문"], horizontal=True
     )
-    type_map = {"매수": "buy", "쿼터매도": "quarter_sell", "지정가매도 (전량, 라운드 종료)": "final_sell", "자금 추가 (예비금)": "deposit"}
+    type_map = {"매수": "buy", "쿼터매도": "quarter_sell", "지정가매도 (전량, 라운드 종료)": "final_sell", "자금 추가 (예비금)": "deposit", "미체결 매수 주문": "pending_buy"}
     ttype = type_map[trade_type_label]
  
     default_price = 0.0
@@ -2619,6 +2744,14 @@ with tab_trade:
             st.markdown(
                 '<div class="note">자금 추가: 입력한 금액이 잔금에 더해집니다. T·평단·보유수량은 변하지 않습니다. '
                 '원래 시드를 넘는 추가분은 예비금으로 표시되고, T가 20을 넘으면 25분할 틀(예비금 모드)이 자동 적용됩니다.</div>',
+                unsafe_allow_html=True,
+            )
+        elif ttype == "pending_buy":
+            t_price = 0.0
+            t_qty = st.number_input("주문수량", min_value=0.0, value=0.0, step=1.0, format="%.0f")
+            st.markdown(
+                '<div class="note">미체결 매수 주문: 체결가가 확인되지 않은 시장가 주문을 주수만으로 기록합니다. '
+                '잔금·보유·평단·T에는 영향이 없습니다. 체결가 확인 후 이 기록을 삭제하고 일반 매수로 다시 기록하세요.</div>',
                 unsafe_allow_html=True,
             )
         else:
@@ -2679,7 +2812,9 @@ with tab_trade:
     if submitted:
         if ttype == "deposit" and t_price <= 0:
             st.error("추가 금액을 올바르게 입력하세요.")
-        elif ttype != "deposit" and (t_price <= 0 or t_qty <= 0):
+        elif ttype == "pending_buy" and t_qty <= 0:
+            st.error("수량을 올바르게 입력하세요.")
+        elif ttype not in ("deposit", "pending_buy") and (t_price <= 0 or t_qty <= 0):
             st.error("가격과 수량을 올바르게 입력하세요.")
         elif ttype in ("quarter_sell", "final_sell") and t_qty > r["qty"] + 1e-9:
             st.error("보유수량보다 많습니다.")
@@ -2689,6 +2824,8 @@ with tab_trade:
             d_str = t_date.isoformat()
             if ttype == "buy":
                 apply_buy(r, d_str, t_price, t_qty, t_delta or 0.0)
+            elif ttype == "pending_buy":
+                apply_pending_buy(r, d_str, t_qty)
             elif ttype == "deposit":
                 apply_deposit(r, d_str, t_price)
             elif ttype == "quarter_sell":
@@ -2754,15 +2891,15 @@ with tab_history:
                             )
                         if rr["trades"]:
                             rows = []
-                            type_label = {"buy": "매수", "quarter_sell": "쿼터매도", "final_sell": "지정가매도", "deposit": "자금 추가"}
+                            type_label = {"buy": "매수", "quarter_sell": "쿼터매도", "final_sell": "지정가매도", "deposit": "자금 추가", "pending_buy": "미체결 매수"}
                             for idx, t in enumerate(rr["trades"]):
                                 rows.append({
                                     "ID": t.get("id", idx + 1),
                                     "날짜": t["date"],
                                     "유형": type_label[t["type"]],
-                                    "가격": round(t["price"], 2) if t["type"] != "deposit" else "—",
+                                    "가격": (round(t["price"], 2) if t.get("price") is not None else "—") if t["type"] != "deposit" else "—",
                                     "수량": round(t["qty"], 4) if t["type"] != "deposit" else "—",
-                                    "금액": round(t["amount"], 2),
+                                    "금액": round(t["amount"], 2) if t.get("amount") is not None else "—",
                                     "T": round(t["tAfter"], 3),
                                     "평단": round(t["avgAfter"], 2),
                                     "손익": (round(t["pnl"], 2) if t["pnl"] is not None else "—"),
@@ -2865,15 +3002,27 @@ with tab_settings:
     st.markdown('<div class="card-title">포트폴리오 설정</div>', unsafe_allow_html=True)
     with st.form("settings_form"):
         p_name = st.text_input("포트폴리오 이름", value=current_p["name"])
+        _is_res_set = bool(cfg.get("is_reserve", False))
         sc1, sc2 = st.columns(2)
         with sc1:
             n_symbol = st.selectbox("종목", ["TQQQ", "SOXL"], index=["TQQQ", "SOXL"].index(cfg["symbol"]))
         with sc2:
-            n_splits = st.selectbox("분할 수", [20, 40], index=[20, 40].index(cfg["splits"]))
+            _split_opts = [10, 20, 40] if _is_res_set else [20, 40]
+            _cur_splits = cfg["splits"] if cfg["splits"] in _split_opts else _split_opts[0]
+            n_splits = st.selectbox("분할 수", _split_opts, index=_split_opts.index(_cur_splits))
         n_capital = st.number_input("기준 원금 ($, 단리 모드에서 다음 라운드 시작자본)", min_value=0.0, value=float(cfg["capital"]), step=100.0)
         n_compounding = st.radio(
             "라운드 종료 후 재투입 방식", ["복리", "단리"], index=0 if cfg["compounding"] else 1
         ) == "복리"
+        if _is_res_set:
+            _cur_ver = str(cfg.get("version", "v3.5") or "v3.5").strip().lower()
+            n_version = st.selectbox("버전 (예비금 규칙)", ["v3.5", "v3.7"], index=["v3.5", "v3.7"].index(_cur_ver) if _cur_ver in ["v3.5", "v3.7"] else 0)
+            _set_parents = [pp["name"] for pp in data["portfolios"] if pp["id"] != current_p["id"] and not (pp.get("config") or {}).get("is_reserve")]
+            _cur_parent = cfg.get("reserve_parent")
+            n_parent = st.selectbox("연동 본계좌 (T≥20일 때 예비금 활성화)", _set_parents, index=_set_parents.index(_cur_parent) if _cur_parent in _set_parents else 0) if _set_parents else None
+        else:
+            n_version = cfg.get("version", "v3.3")
+            n_parent = cfg.get("reserve_parent")
         save_submit = st.form_submit_button("저장", use_container_width=True)
     if save_submit:
         current_p["name"] = p_name
@@ -2881,6 +3030,8 @@ with tab_settings:
         cfg["splits"] = n_splits
         cfg["capital"] = n_capital
         cfg["compounding"] = n_compounding
+        cfg["version"] = n_version
+        cfg["reserve_parent"] = n_parent
  
         ok = persist()
  
